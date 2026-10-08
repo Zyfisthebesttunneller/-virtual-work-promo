@@ -1,0 +1,1430 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>虚功原理 · 平衡之美</title>
+<!--FONTS-->
+<style>
+  :root { --bg: #000; --fg: #f3ead8; --gold: #e2bd6b; --dim: rgba(255,255,255,.55); box-sizing: border-box;
+    padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px); }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg: #000; --fg: #f3ead8; } }
+  :root[data-theme="dark"] { --bg: #000; --fg: #f3ead8; }
+  html { scroll-padding-top: env(safe-area-inset-top, 0px); }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); overflow: hidden; }
+  body { font-family: "Noto Serif SC", "Noto Serif CJK SC", serif; }
+  #stage { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: #000; }
+  canvas { width: 100vw; height: 56.25vw; max-height: 100vh; max-width: 177.78vh; background: #000; display: block; }
+  #start { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 22px;
+    background: radial-gradient(ellipse at center, #0d1a2b 0%, #000 70%); cursor: pointer; z-index: 5; text-align: center; padding: 16px; }
+  #start h1 { font-weight: 900; font-size: clamp(40px, 9vw, 120px); margin: 0; letter-spacing: .12em;
+    background: linear-gradient(120deg, #7a5520, #f3d88f 45%, #fff4d2 50%, #d9b25c 55%, #7a5520); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  #start p { margin: 0; font-family: "Cinzel", serif; letter-spacing: .3em; color: #cdb88e; font-size: clamp(11px, 1.8vw, 20px); }
+  #start button { margin-top: 18px; font: 700 18px "Noto Serif SC", "Noto Serif CJK SC", serif; color: #1a1206; background: var(--gold); border: 0; border-radius: 999px;
+    padding: 14px 34px; cursor: pointer; letter-spacing: .15em; }
+  #start small { color: var(--dim); font-size: 13px; letter-spacing: .1em; }
+  #ui { position: fixed; left: 0; right: 0; bottom: 0; padding: 14px 16px calc(16px + env(safe-area-inset-bottom, 0px)); display: flex; gap: 14px; align-items: center;
+    background: linear-gradient(transparent, rgba(0,0,0,.75)); transition: opacity .4s; z-index: 4; font: 13px "Cinzel", serif; color: #ddd; }
+  #ui.hide { opacity: 0; }
+  #ui button { background: none; border: 0; color: #fff; font-size: 18px; cursor: pointer; width: 32px; }
+  #bar { flex: 1; height: 5px; background: rgba(255,255,255,.2); border-radius: 3px; cursor: pointer; position: relative; }
+  #fill { position: absolute; left: 0; top: 0; bottom: 0; background: var(--gold); border-radius: 3px; width: 0; }
+</style>
+</head>
+<body>
+<div id="stage"><canvas id="c" width="1920" height="1080"></canvas></div>
+<div id="start">
+  <h1>虚功原理</h1>
+  <p>THE PRINCIPLE OF VIRTUAL WORK</p>
+  <button id="go">▶ 播放</button>
+  <small id="load">载入字体中…</small>
+</div>
+<div id="ui" class="hide"><button id="pp">❚❚</button><span id="tm">0:00</span><div id="bar"><div id="fill"></div></div><span id="dur">2:47</span><button id="fs">⛶</button></div>
+<audio id="au" preload="auto"></audio>
+<script>
+'use strict';
+// ======================================================================== timeline constants
+const W = 1920, H = 1080, BPM = 90, BEAT = 60 / BPM, BAR = BEAT * 4, EIGHTH = BEAT / 2, NBARS = 61, TOTAL = NBARS * BAR + 4;
+const EXPORT = /[?&]export=1/.test(location.search);
+const cv = document.getElementById('c'), CTX0 = cv.getContext('2d');
+let ctx = CTX0;
+const PI = Math.PI, TAU = PI * 2;
+const clamp = (x, a = 0, b = 1) => x < a ? a : x > b ? b : x;
+const lerp = (a, b, t) => a + (b - a) * t;
+const sstep = (a, b, x) => { const t = clamp((x - a) / (b - a)); return t * t * (3 - 2 * t); };
+const eio = t => t < .5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+const eout = t => 1 - Math.pow(1 - t, 3);
+const eexpo = t => t >= 1 ? 1 : 1 - Math.pow(2, -10 * t);
+const eback = t => { const c = 1.9; return 1 + (c + 1) * Math.pow(t - 1, 3) + c * Math.pow(t - 1, 2); };
+const win = (t, a, b, fi = .5, fo = .5) => sstep(a, a + fi, t) * (1 - sstep(b - fo, b, t));
+function mulberry(a) { return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+const hash1 = n => { const x = Math.sin(n * 127.1 + 311.7) * 43758.5453; return x - Math.floor(x); };
+const mk = (w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; };
+const F_ZH = '"Noto Serif SC", "Noto Serif CJK SC", "Source Han Serif SC", "Songti SC", "SimSun", serif';
+const F_EN = '"Cinzel", "Trajan Pro", "Times New Roman", serif';
+const F_IT = '"Cormorant Garamond", "Garamond", "Times New Roman", serif';
+const F_MATH = '"STIX Two Text", "Cambria Math", "Latin Modern Math", "Times New Roman", serif';
+// colour language used throughout: force = orange, imagined motion = cyan, work = gold, constraint = magenta
+const C_FORCE = '255,140,70', C_VIRT = '80,215,255', C_WORK = '255,205,110', C_CONS = '255,70,165', C_OK = '110,255,170', C_BAD = '255,72,72', C_STEEL = '190,210,240';
+
+// ======================================================================== drawing primitives
+function text(s, x, y, o = {}) {
+  const a = o.alpha ?? 1; if (a <= .003) return;
+  ctx.save();
+  ctx.font = `${o.style || ''} ${o.weight || 400} ${o.size || 40}px ${o.font || F_ZH}`;
+  ctx.textAlign = o.align || 'center'; ctx.textBaseline = o.base || 'middle';
+  if (o.ls) { ctx.letterSpacing = o.ls + 'px'; if ((o.align || 'center') === 'center') x += o.ls / 2; }
+  ctx.globalAlpha = Math.min(1, a);
+  if (o.comp) ctx.globalCompositeOperation = o.comp;
+  if (o.glow) { ctx.shadowColor = o.glow; ctx.shadowBlur = o.blur || 24; }
+  ctx.fillStyle = o.color || '#fff';
+  ctx.fillText(s, x, y);
+  ctx.restore();
+}
+function measure(s, size, weight = 400, font = F_ZH, style = '') { ctx.save(); ctx.font = `${style} ${weight} ${size}px ${font}`; const w = ctx.measureText(s).width; ctx.restore(); return w; }
+const SPR = {};
+function sprite(col) {
+  if (SPR[col]) return SPR[col];
+  const c = mk(128, 128), x = c.getContext('2d'), g = x.createRadialGradient(64, 64, 0, 64, 64, 64);
+  g.addColorStop(0, 'rgba(255,255,255,1)'); g.addColorStop(.1, `rgba(${col},.95)`); g.addColorStop(.35, `rgba(${col},.28)`); g.addColorStop(.7, `rgba(${col},.06)`); g.addColorStop(1, `rgba(${col},0)`);
+  x.fillStyle = g; x.fillRect(0, 0, 128, 128); return (SPR[col] = c);
+}
+function glow(x, y, r, col, a = 1) {
+  if (a <= .003 || r <= 0) return;
+  ctx.save(); ctx.globalCompositeOperation = 'lighter';
+  while (a > 0) { ctx.globalAlpha = Math.min(1, a); ctx.drawImage(sprite(col), x - r, y - r, 2 * r, 2 * r); a -= 1; }
+  ctx.restore();
+}
+// neon stroke of an arbitrary path: wide faint halo, mid glow, bright core
+function neon(path, col, w = 3, a = 1, core = true) {
+  if (a <= .003) return;
+  ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  ctx.beginPath(); path();
+  for (const [k, al] of [[5, .07], [2.4, .22], [1, .9]]) { ctx.strokeStyle = `rgba(${col},${al * a})`; ctx.lineWidth = w * k; ctx.stroke(); }
+  if (core) { ctx.strokeStyle = `rgba(255,255,255,${.55 * a})`; ctx.lineWidth = Math.max(1, w * .35); ctx.stroke(); }
+  ctx.restore();
+}
+function arrow(x0, y0, x1, y1, col, o = {}) {
+  const a = o.a ?? 1; if (a <= .003) return;
+  const dx = x1 - x0, dy = y1 - y0, L = Math.hypot(dx, dy); if (L < 2) return;
+  const ux = dx / L, uy = dy / L, hs = Math.min(o.head ?? 30, L * .55), w = o.w ?? 6, bx = x1 - ux * hs * .8, by = y1 - uy * hs * .8;
+  ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.lineCap = 'round';
+  if (o.dash) { ctx.setLineDash(o.dash); ctx.lineDashOffset = o.off || 0; }
+  ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(bx, by);
+  for (const [k, al] of [[3.6, .08], [1.9, .25], [1, .95]]) { ctx.strokeStyle = `rgba(${col},${al * a})`; ctx.lineWidth = w * k; ctx.stroke(); }
+  ctx.setLineDash([]);
+  ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x1 - ux * hs - uy * hs * .5, y1 - uy * hs + ux * hs * .5); ctx.lineTo(x1 - ux * hs * .72, y1 - uy * hs * .72); ctx.lineTo(x1 - ux * hs + uy * hs * .5, y1 - uy * hs - ux * hs * .5); ctx.closePath();
+  ctx.fillStyle = `rgba(${col},${.25 * a})`; ctx.lineWidth = 10; ctx.strokeStyle = `rgba(${col},${.12 * a})`; ctx.stroke(); ctx.fillStyle = `rgba(${col},${a})`; ctx.fill();
+  ctx.restore();
+  if (o.label) text(o.label, x1 + (o.lx || 0), y1 + (o.ly || 0), { font: o.lfont || F_MATH, style: o.lstyle ?? 'italic', size: o.lsize || 40, color: `rgb(${col})`, alpha: a, glow: `rgba(${col},.8)`, blur: 16, weight: o.lweight || 400 });
+}
+function goldGrad(x0, y0, x1, y1, s) {
+  const g = ctx.createLinearGradient(x0, y0, x1, y1);
+  g.addColorStop(0, '#6e4b1b'); g.addColorStop(.35, '#d9b25c');
+  if (s > .05 && s < .95) { g.addColorStop(s - .05, '#e7c574'); g.addColorStop(s, '#fff6dc'); g.addColorStop(s + .05, '#e7c574'); }
+  g.addColorStop(.7, '#c99a45'); g.addColorStop(1, '#7a5520');
+  return g;
+}
+function titleLayout(str, cx, size, ls, font = F_ZH, weight = 900) {
+  ctx.save(); ctx.font = `${weight} ${size}px ${font}`; const ws = [...str].map(c => ctx.measureText(c).width); ctx.restore();
+  const total = ws.reduce((a, b) => a + b, 0) + ls * (ws.length - 1); let x = cx - total / 2;
+  return ws.map(w => { const r = { x: x + w / 2, w, total }; x += w + ls; return r; });
+}
+// gold title, letter by letter, with a travelling specular sheen
+function titleWord(str, cx, cy, size, lt, t0, stagger, ls, a = 1, grow = .6, font = F_ZH, weight = 900) {
+  if (a <= .003) return;
+  const L = titleLayout(str, cx, size, ls, font, weight), total = L[0].total, sheenX = cx - total / 2 + (((lt * .32) % 1.8) - .3) * total;
+  ctx.save(); ctx.font = `${weight} ${size}px ${font}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  [...str].forEach((ch, i) => {
+    const { x, w } = L[i], k = clamp((lt - t0 - i * stagger) / 1.0);
+    if (k <= 0) return;
+    const e = eexpo(k), sc = 1 + grow * (1 - e);
+    ctx.save(); ctx.translate(x, cy); ctx.scale(sc, sc); ctx.globalAlpha = clamp(k * 2.5) * a;
+    ctx.shadowColor = 'rgba(255,180,80,.55)'; ctx.shadowBlur = 50;
+    ctx.fillStyle = goldGrad(-w / 2, -size / 2, w / 2, size / 2, (sheenX - (x - w / 2)) / w); ctx.fillText(ch, 0, 0);
+    ctx.restore();
+  });
+  ctx.restore();
+}
+function glitchText(s, x, y, size, a, font = F_EN, seed = 0, col = '#fff') {
+  if (a <= 0) return;
+  const j = (hash1(seed * 7.1) - .5) * 14;
+  ctx.save(); ctx.globalCompositeOperation = 'lighter';
+  text(s, x - 5 + j, y, { font, size, color: 'rgba(255,60,80,1)', alpha: a * .55 });
+  text(s, x + 5 - j, y, { font, size, color: 'rgba(60,220,255,1)', alpha: a * .55 });
+  ctx.restore();
+  text(s, x, y, { font, size, color: col, alpha: a, glow: 'rgba(255,255,255,.6)', blur: 20 });
+}
+function flare(x, y, a, len = 900) {
+  if (a <= 0) return;
+  ctx.save(); ctx.globalCompositeOperation = 'lighter';
+  const g = ctx.createLinearGradient(x - len, 0, x + len, 0);
+  g.addColorStop(0, 'rgba(120,170,255,0)'); g.addColorStop(.5, `rgba(255,236,200,${.9 * a})`); g.addColorStop(1, 'rgba(120,170,255,0)');
+  ctx.fillStyle = g; ctx.fillRect(x - len, y - 2, len * 2, 4);
+  ctx.globalAlpha = .35 * a; ctx.fillRect(x - len * .6, y - 9, len * 1.2, 18);
+  ctx.restore();
+  ctx.save(); ctx.translate(x, y); ctx.scale(4, 1); glow(0, 0, 60, '255,220,170', a); ctx.restore();
+}
+function sunburst(cx, cy, lt, a, n = 24, col = '255,200,120') {
+  if (a <= 0) return;
+  ctx.save(); ctx.translate(cx, cy); ctx.rotate(lt * .05); ctx.globalCompositeOperation = 'lighter';
+  const g = ctx.createRadialGradient(0, 0, 0, 0, 0, 1100); g.addColorStop(0, `rgba(${col},${.16 * a})`); g.addColorStop(1, `rgba(${col},0)`);
+  ctx.fillStyle = g;
+  for (let i = 0; i < n; i++) { const a0 = i * TAU / n; ctx.beginPath(); ctx.moveTo(0, 0); ctx.arc(0, 0, 1200, a0, a0 + TAU / n * .45); ctx.fill(); }
+  ctx.restore();
+}
+function dim(a) { if (a > 0) { ctx.fillStyle = `rgba(0,0,0,${a})`; ctx.fillRect(0, 0, W, H); } }
+function bracket(x, y0, y1, side, col, a, label, lsize = 34) {   // a measuring bracket with a label
+  if (a <= .003 || Math.abs(y1 - y0) < 2) return;
+  const d = side * 16;
+  neon(() => { ctx.moveTo(x + d, y0); ctx.lineTo(x, y0); ctx.lineTo(x, y1); ctx.lineTo(x + d, y1); }, col, 2.2, a, false);
+  if (label) text(label, x - side * 40, (y0 + y1) / 2, { font: F_MATH, size: lsize, color: `rgb(${col})`, alpha: a, glow: `rgba(${col},.8)`, blur: 14, weight: 700 });
+}
+function ring(x, y, r, col, a, w = 2) { neon(() => ctx.arc(x, y, r, 0, TAU), col, w, a, false); }
+
+// ======================================================================== backgrounds: painted once, drifted every frame
+const rnd = mulberry(20261007);
+const STARS = Array.from({ length: 520 }, () => ({ x: rnd() * W, y: rnd() * H, z: .2 + rnd() * .8, p: rnd() * TAU }));
+function starfield(t, a = 1, vx = 8, vy = 0) {
+  if (a <= 0) return;
+  ctx.save(); ctx.fillStyle = '#fff';
+  for (const s of STARS) {
+    const x = ((s.x + t * vx * s.z) % W + W) % W, y = ((s.y + t * vy * s.z) % H + H) % H;
+    ctx.globalAlpha = a * s.z * (.55 + .45 * Math.sin(t * 2 + s.p));
+    const r = s.z * 2.2; ctx.fillRect(x, y, r, r);
+  }
+  ctx.restore();
+}
+const NEB = {};
+function paintNebula(name, tint, seed) {     // domain-warped fbm cloud, painted once at low resolution
+  const w = 640, h = 360, c = mk(w, h), x = c.getContext('2d'), img = x.createImageData(w, h), d = img.data;
+  const hs = (i, j) => { const n = Math.sin(i * 127.1 + j * 311.7 + seed * 74.7) * 43758.5453; return n - Math.floor(n); };
+  const noise = (px, py) => { const i = Math.floor(px), j = Math.floor(py); let fx = px - i, fy = py - j; fx = fx * fx * (3 - 2 * fx); fy = fy * fy * (3 - 2 * fy);
+    const a = hs(i, j), b = hs(i + 1, j), cc = hs(i, j + 1), dd = hs(i + 1, j + 1); return a + (b - a) * fx + (cc - a) * fy + (a - b - cc + dd) * fx * fy; };
+  const fbm = (px, py) => { let s = 0, a = .5; for (let o = 0; o < 5; o++) { s += a * noise(px, py); px = px * 2.03 + 1.7; py = py * 2.03 + 9.2; a *= .5; } return s; };
+  for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) {
+    const ux = (i - w / 2) / (h / 2) * 1.25, uy = (j - h / 2) / (h / 2) * 1.25;
+    const qx = fbm(ux, uy), qy = fbm(ux + 5.2, uy + 1.3), n = fbm(ux + 2.2 * qx, uy + 2.2 * qy);
+    const k = clamp((n - .35) / .7), s = k * k * (3 - 2 * k) * 1.3, q3 = Math.pow(clamp(qy - .2), 3) * .45;
+    const r = .008 + tint[0] * s + tint[2] * q3, g = .01 + tint[1] * s + tint[0] * q3, b = .025 + tint[2] * s + tint[1] * q3;
+    const o = (j * w + i) * 4; d[o] = clamp(r) * 255; d[o + 1] = clamp(g) * 255; d[o + 2] = clamp(b) * 255; d[o + 3] = 255;
+  }
+  x.putImageData(img, 0, 0); NEB[name] = c;
+}
+paintNebula('blue', [.12, .2, .55], 1); paintNebula('gold', [.42, .27, .08], 2); paintNebula('teal', [.05, .32, .38], 3); paintNebula('violet', [.3, .1, .48], 4);
+function nebula(name, t, a = 1, zoom = 1.18) {
+  const c = NEB[name]; if (!c || a <= 0) return;
+  ctx.save(); ctx.imageSmoothingQuality = 'high';
+  const s = zoom + .04 * Math.sin(t * .05), w = W * s, h = H * s, dx = (W - w) / 2 + 40 * Math.sin(t * .031), dy = (H - h) / 2 + 26 * Math.cos(t * .027);
+  ctx.globalAlpha = Math.min(1, a); ctx.drawImage(c, dx, dy, w, h);
+  if (a > 1) { ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = a - 1; ctx.drawImage(c, dx, dy, w, h); }
+  ctx.restore();
+}
+function bgGrad(c0, c1, cx = W / 2, cy = H / 2) {
+  const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, 1200);
+  g.addColorStop(0, c0); g.addColorStop(1, c1); ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+}
+function blueprint(a, t = 0) {     // the faint graph-paper grid of the "imagination" scenes
+  if (a <= 0) return;
+  ctx.save(); ctx.globalCompositeOperation = 'lighter';
+  const off = (t * 6) % 60;
+  ctx.strokeStyle = `rgba(80,180,255,${.05 * a})`; ctx.lineWidth = 1; ctx.beginPath();
+  for (let x = -off; x < W; x += 60) { ctx.moveTo(x, 0); ctx.lineTo(x, H); }
+  for (let y = -off; y < H; y += 60) { ctx.moveTo(0, y); ctx.lineTo(W, y); } ctx.stroke();
+  ctx.strokeStyle = `rgba(80,180,255,${.1 * a})`; ctx.beginPath();
+  for (let x = -off; x < W; x += 300) { ctx.moveTo(x, 0); ctx.lineTo(x, H); }
+  for (let y = -off; y < H; y += 300) { ctx.moveTo(0, y); ctx.lineTo(W, y); } ctx.stroke();
+  ctx.restore();
+}
+function ground(y, a = 1, col = '226,189,107') {
+  if (a <= 0) return;
+  ctx.save(); ctx.globalCompositeOperation = 'lighter';
+  const g = ctx.createLinearGradient(0, 0, W, 0); g.addColorStop(0, `rgba(${col},0)`); g.addColorStop(.5, `rgba(${col},${.55 * a})`); g.addColorStop(1, `rgba(${col},0)`);
+  ctx.fillStyle = g; ctx.fillRect(0, y, W, 2);
+  const g2 = ctx.createLinearGradient(0, y, 0, y + 160); g2.addColorStop(0, `rgba(${col},${.06 * a})`); g2.addColorStop(1, `rgba(${col},0)`);
+  ctx.fillStyle = g2; ctx.fillRect(0, y, W, 160);
+  ctx.restore();
+}
+// sample filled pixels of a drawing (used to morph particles between shapes)
+function samplePts(drawFn, n, step = 3, seed = 7) {
+  const c = mk(W, H), x = c.getContext('2d', { willReadFrequently: true }), old = ctx;
+  ctx = x; try { drawFn(); } finally { ctx = old; }
+  const d = x.getImageData(0, 0, W, H).data, pts = [];
+  for (let y = 0; y < H; y += step) for (let X = 0; X < W; X += step) if (d[(y * W + X) * 4 + 3] > 140) pts.push([X, y]);
+  const r = mulberry(seed); for (let i = pts.length - 1; i > 0; i--) { const j = Math.floor(r() * (i + 1)); [pts[i], pts[j]] = [pts[j], pts[i]]; }
+  return Array.from({ length: n }, (_, i) => pts.length ? pts[i % pts.length] : [W / 2, H / 2]);
+}
+
+// ======================================================================== the lever: the film's recurring hero object
+const LV = { cx: W / 2, cy: 610, u: 165 }, BEAM_H = 18, BEAM_L = 2.75;
+const MASS = [{ s: -1, m: 2, size: 132 }, { s: 2, m: 1, size: 94 }];
+const lpt = (L, th, s, h) => [L.cx + Math.cos(th) * s * L.u + Math.sin(th) * h, L.cy + Math.sin(th) * s * L.u - Math.cos(th) * h];
+const massC = (M, th, L = LV) => lpt(L, th, M.s, BEAM_H / 2 + M.size / 2);
+let SCANPAT = null;
+function ghostFill(path, col = C_VIRT, a = 1) {           // hologram look for imagined (virtual) positions
+  if (a <= .003) return;
+  if (!SCANPAT) { const c = mk(8, 6), x = c.getContext('2d'); x.fillStyle = 'rgba(90,215,255,.34)'; x.fillRect(0, 0, 8, 2); SCANPAT = ctx.createPattern(c, 'repeat'); }
+  ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.lineJoin = 'round';
+  ctx.beginPath(); path();
+  ctx.globalAlpha = Math.min(1, a); ctx.fillStyle = `rgba(${col},.08)`; ctx.fill(); ctx.fillStyle = SCANPAT; ctx.fill();
+  for (const [w, al] of [[11, .08], [5, .22], [2, .95]]) { ctx.strokeStyle = `rgba(${col},${al})`; ctx.lineWidth = w; ctx.stroke(); }
+  ctx.restore();
+}
+function drawFulcrum(cx, cy, a = 1) {
+  const top = cy + BEAM_H / 2, bot = top + 150;
+  ctx.save(); ctx.globalAlpha = a;
+  const g = ctx.createLinearGradient(cx - 74, 0, cx + 74, 0); g.addColorStop(0, '#161c28'); g.addColorStop(.45, '#5a6680'); g.addColorStop(.55, '#38425a'); g.addColorStop(1, '#10141c');
+  ctx.fillStyle = g; ctx.beginPath(); ctx.moveTo(cx, top); ctx.lineTo(cx + 74, bot); ctx.lineTo(cx - 74, bot); ctx.closePath(); ctx.fill();
+  ctx.strokeStyle = 'rgba(226,189,107,.85)'; ctx.lineWidth = 2; ctx.stroke();
+  ctx.fillStyle = '#252c3a'; ctx.fillRect(cx - 160, bot, 320, 14); ctx.fillStyle = 'rgba(226,189,107,.75)'; ctx.fillRect(cx - 160, bot, 320, 2);
+  ctx.restore();
+  glow(cx, top, 30, '255,210,140', .8 * a);
+}
+function drawBlock(x, y, s, label, a = 1) {
+  if (a <= .003) return;
+  ctx.save(); ctx.globalAlpha *= a;
+  const g = ctx.createLinearGradient(x - s / 2, y - s / 2, x + s / 2, y + s / 2);
+  g.addColorStop(0, '#ffe7b4'); g.addColorStop(.25, '#d8aa55'); g.addColorStop(.7, '#9a6a28'); g.addColorStop(1, '#4f3410');
+  ctx.shadowColor = 'rgba(255,190,100,.4)'; ctx.shadowBlur = 26;
+  ctx.fillStyle = g; ctx.beginPath(); ctx.roundRect(x - s / 2, y - s / 2, s, s, s * .1); ctx.fill();
+  ctx.shadowBlur = 0; ctx.strokeStyle = 'rgba(255,240,200,.85)'; ctx.lineWidth = 2; ctx.stroke();
+  ctx.fillStyle = 'rgba(255,255,255,.22)'; ctx.beginPath(); ctx.roundRect(x - s / 2 + 6, y - s / 2 + 6, s - 12, s * .26, s * .07); ctx.fill();
+  if (label) { ctx.font = `700 ${s * .5}px ${F_EN}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = 'rgba(50,30,8,.9)'; ctx.fillText(label, x, y + s * .04); }
+  ctx.restore();
+}
+function leverPath(u) { const L = BEAM_L * u; ctx.roundRect(-L, -BEAM_H / 2, 2 * L, BEAM_H, 7); for (const M of MASS) ctx.roundRect(M.s * u - M.size / 2, -BEAM_H / 2 - M.size, M.size, M.size, M.size * .1); }
+function drawLever(th, o = {}) {
+  const L = o.L || LV, a = o.a ?? 1; if (a <= .003) return;
+  if (o.ghost) { ctx.save(); ctx.translate(L.cx + (o.jx || 0), L.cy); ctx.rotate(th); ghostFill(() => leverPath(L.u), o.col || C_VIRT, a); ctx.restore(); return; }
+  if (!o.noFulcrum) drawFulcrum(L.cx, L.cy, a);
+  ctx.save(); ctx.globalAlpha = a; ctx.translate(L.cx, L.cy); ctx.rotate(th);
+  const BL = BEAM_L * L.u, g = ctx.createLinearGradient(0, -BEAM_H / 2, 0, BEAM_H / 2);
+  g.addColorStop(0, '#fbeccb'); g.addColorStop(.3, '#d4ad66'); g.addColorStop(1, '#4e3817');
+  ctx.shadowColor = 'rgba(255,190,110,.5)'; ctx.shadowBlur = 26; ctx.fillStyle = g; ctx.beginPath(); ctx.roundRect(-BL, -BEAM_H / 2, 2 * BL, BEAM_H, 7); ctx.fill(); ctx.shadowBlur = 0;
+  ctx.fillStyle = 'rgba(40,25,8,.75)'; for (let k = -2; k <= 2; k++) if (k) ctx.fillRect(k * L.u - 1.5, -BEAM_H / 2 + 4, 3, BEAM_H - 8);
+  for (const M of MASS) drawBlock(M.s * L.u, -BEAM_H / 2 - M.size / 2, M.size, String(M.m));
+  ctx.restore();
+}
+let LEVPTS = null;
+function leverPts() { return LEVPTS || (LEVPTS = samplePts(() => drawLever(0), 2400, 3, 11)); }
+function particleField(pts, t, a, col = '#ffe2b0', sz = 1.6) {
+  if (a <= 0) return;
+  ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.fillStyle = col; ctx.globalAlpha = Math.min(1, a);
+  for (const p of pts) ctx.fillRect(p[0], p[1], sz, sz);
+  ctx.restore();
+}
+
+// ======================================================================== the "old way": a truss and its pile of equations
+const TR = (() => {
+  const n = 7, x0 = 150, dx = 165, yb = 720, yt = 550, nodes = [], mem = [];
+  for (let i = 0; i < n; i++) nodes.push([x0 + i * dx, yb]);
+  for (let i = 0; i < n - 1; i++) nodes.push([x0 + (i + .5) * dx, yt]);
+  for (let i = 0; i < n - 1; i++) mem.push([i, i + 1]);
+  for (let i = 0; i < n - 2; i++) mem.push([n + i, n + i + 1]);
+  for (let i = 0; i < n - 1; i++) { mem.push([i, n + i]); mem.push([n + i, i + 1]); }
+  const arrows = [];
+  mem.forEach(([p, q], k) => { const sg = hash1(k * 3.3) > .5 ? 1 : -1; arrows.push([p, q, sg], [q, p, sg]); });
+  const r = mulberry(5); for (let i = arrows.length - 1; i > 0; i--) { const j = Math.floor(r() * (i + 1)); [arrows[i], arrows[j]] = [arrows[j], arrows[i]]; }
+  const sub = n => String(n).split('').map(d => '₀₁₂₃₄₅₆₇₈₉'[+d]).join('');
+  const eqs = []; const L = 'ABCDEFGHIJKLM';
+  for (let k = 0; k < 24; k++) {
+    const a = 1 + (k * 7) % 23, b = 1 + (k * 11 + 3) % 23, c = 1 + (k * 5 + 9) % 23, f = k % 2 ? 'cos 60°' : 'sin 60°';
+    eqs.push(`${L[Math.floor(k / 2) % 13]}： N${sub(a)} ${f} ${k % 3 ? '+' : '−'} N${sub(b)} ${k % 4 ? '−' : '+'} N${sub(c)} ${f} = ${k % 5 ? '0' : 'P'}`);
+  }
+  return { nodes, mem, arrows, eqs, n };
+})();
+function drawTruss(lt, a, t0) {
+  if (a <= .003) return;
+  const { nodes, mem, arrows, n } = TR;
+  neon(() => mem.forEach(([p, q]) => { ctx.moveTo(...nodes[p]); ctx.lineTo(...nodes[q]); }), C_STEEL, 4, a * .8);
+  nodes.forEach(([x, y]) => glow(x, y, 16, '230,240,255', a * .9));
+  arrows.forEach(([p, q, sg], i) => {
+    const k = clamp((lt - t0 - i * .06) / .25) * a; if (k <= 0) return;
+    const [x0, y0] = nodes[p], [x1, y1] = nodes[q], L = Math.hypot(x1 - x0, y1 - y0), ux = (x1 - x0) / L, uy = (y1 - y0) / L;
+    const s0 = 14, s1 = 14 + 46 * eout(k);
+    if (sg > 0) arrow(x0 + ux * s0, y0 + uy * s0, x0 + ux * s1, y0 + uy * s1, C_CONS, { a: k, w: 3, head: 13 });
+    else arrow(x0 + ux * s1, y0 + uy * s1, x0 + ux * s0, y0 + uy * s0, C_CONS, { a: k, w: 3, head: 13 });
+  });
+  for (let i = 1; i < n - 1; i++) { const k = clamp((lt - t0 - .2 - i * .1) / .3) * a; const [x, y] = nodes[i]; arrow(x, y + 16, x, y + 16 + 80 * eout(k), C_FORCE, { a: k, w: 4, head: 16 }); }
+  for (const i of [0, n - 1]) { const k = clamp((lt - t0 - .5) / .3) * a; const [x, y] = nodes[i]; arrow(x, y + 110, x, y + 110 - 86 * eout(k), C_CONS, { a: k, w: 4, head: 16 }); }
+}
+function drawEqPile(lt, a, t0) {
+  if (a <= .003) return;
+  const x = 1290, top = 250, lh = 46, speed = 1.0 + .9 * clamp((lt - t0) / 4);
+  const shown = (lt - t0) * 3.2 * speed;
+  ctx.save(); ctx.beginPath(); ctx.rect(1240, top - 30, 660, 560); ctx.clip();
+  const scroll = Math.max(0, shown - 11) * lh;
+  TR.eqs.forEach((e, i) => {
+    const k = clamp(shown - i); if (k <= 0) return;
+    const y = top + i * lh - scroll; if (y < top - 40 || y > top + 560) return;
+    text(e, x, y, { font: F_MATH, style: 'italic', size: 28, color: '#dfe7ff', alpha: a * k * (.35 + .65 * sstep(top - 30, top + 60, y)), align: 'left' });
+  });
+  ctx.restore();
+  text('未知的力：46 个', 1290, 190, { size: 34, weight: 700, color: `rgb(${C_CONS})`, alpha: a * sstep(t0 + .6, t0 + 1.2, lt), align: 'left', glow: `rgba(${C_CONS},.6)`, blur: 16 });
+  text('46 unknown forces', 1580, 192, { font: F_IT, style: 'italic', size: 28, color: '#e6b5d0', alpha: a * sstep(t0 + .8, t0 + 1.4, lt), align: 'left' });
+}
+
+// ======================================================================== scissor lift: many moving points, one bookkeeping rule
+const SL = { x0: 590, y0: 860, Lk: 250, n: 3, phi0: .74, G: 1, m: .3 };
+function slGeo(phi) {
+  const w = SL.Lk * Math.cos(phi), h = SL.Lk * Math.sin(phi), xl = SL.x0, xr = SL.x0 + w, Lp = [], Rp = [], Cp = [];
+  for (let k = 0; k <= SL.n; k++) { Lp.push([xl, SL.y0 - k * h]); Rp.push([xr, SL.y0 - k * h]); }
+  for (let k = 0; k < SL.n; k++) Cp.push([(xl + xr) / 2, SL.y0 - (k + .5) * h]);
+  const top = SL.y0 - SL.n * h, boxes = [-1, 0, 1].map(i => [(xl + xr) / 2 + i * 82, top - 14 - 9 - 36]);
+  return { Lp, Rp, Cp, w, h, top, boxes, xl, xr };
+}
+// virtual work of every applied force for a nudge dphi; the push P is the one value that balances the lift
+function slTerms(phi, dphi) {
+  const c = Math.cos(phi) * SL.Lk * dphi, s = Math.sin(phi) * SL.Lk * dphi, k = 100 / SL.Lk;
+  const box = -SL.G * SL.n * c * k, link = [0, 1, 2].map(i => -2 * SL.m * (i + .5) * c * k);
+  const P = (SL.G * 3 * SL.n + 2 * SL.m * 4.5) / Math.tan(phi), push = P * s * k;
+  return { rows: [box, box, box, ...link, push], P };
+}
+function drawLift(phi, o = {}) {
+  const a = o.a ?? 1; if (a <= .003) return;
+  const g = slGeo(phi), links = [];
+  for (let k = 0; k < SL.n; k++) { links.push([g.Lp[k], g.Rp[k + 1]], [g.Rp[k], g.Lp[k + 1]]); }
+  if (o.ghost) {
+    neon(() => links.forEach(([p, q]) => { ctx.moveTo(...p); ctx.lineTo(...q); }), C_VIRT, 3, a * .9);
+    neon(() => { ctx.moveTo(g.xl - 70, g.top - 14); ctx.lineTo(g.xr + 70, g.top - 14); }, C_VIRT, 3, a * .9);
+    ctx.save(); ctx.translate(0, 0); ghostFill(() => g.boxes.forEach(([x, y]) => ctx.roundRect(x - 36, y - 36, 72, 72, 7)), C_VIRT, a * .9); ctx.restore();
+    return;
+  }
+  ctx.save(); ctx.globalAlpha = a;
+  // rail + fixed foot + slider
+  ctx.fillStyle = '#1d2433'; ctx.fillRect(SL.x0 - 120, SL.y0 + 14, 500, 16); ctx.fillStyle = 'rgba(226,189,107,.7)'; ctx.fillRect(SL.x0 - 120, SL.y0 + 14, 500, 2);
+  ctx.fillStyle = '#3b465c'; ctx.beginPath(); ctx.moveTo(SL.x0, SL.y0); ctx.lineTo(SL.x0 + 26, SL.y0 + 14); ctx.lineTo(SL.x0 - 26, SL.y0 + 14); ctx.fill();
+  ctx.fillStyle = '#4a5670'; ctx.beginPath(); ctx.roundRect(g.xr - 26, SL.y0 - 6, 52, 20, 5); ctx.fill();
+  ctx.lineCap = 'round';
+  for (const [p, q] of links) { ctx.strokeStyle = '#2c3850'; ctx.lineWidth = 18; ctx.beginPath(); ctx.moveTo(...p); ctx.lineTo(...q); ctx.stroke(); }
+  ctx.restore();
+  neon(() => links.forEach(([p, q]) => { ctx.moveTo(...p); ctx.lineTo(...q); }), C_STEEL, 2.2, a * .75);
+  ctx.save(); ctx.globalAlpha = a;
+  const pg = ctx.createLinearGradient(0, g.top - 24, 0, g.top - 4); pg.addColorStop(0, '#f5e2b8'); pg.addColorStop(1, '#6b4d22');
+  ctx.fillStyle = pg; ctx.shadowColor = 'rgba(255,190,110,.5)'; ctx.shadowBlur = 20; ctx.beginPath(); ctx.roundRect(g.xl - 76, g.top - 24, g.w + 152, 18, 5); ctx.fill();
+  ctx.restore();
+  g.boxes.forEach(([x, y]) => { ctx.save(); ctx.globalAlpha = a; drawBlock(x, y, 72, ''); ctx.restore(); });
+  [...g.Lp, ...g.Rp, ...g.Cp].forEach(([x, y]) => glow(x, y, 15, '255,215,150', a));
+}
+
+// ======================================================================== block and tackle (4 supporting strands)
+const PU = { up: [590, 750], low: [510, 670], uy: 230, r: 40, ly0: 560, hand0: 470 };
+function sheave(x, y, r, ang, a) {
+  ctx.save(); ctx.globalAlpha = a; ctx.translate(x, y); ctx.rotate(ang);
+  const g = ctx.createRadialGradient(-r * .3, -r * .3, 2, 0, 0, r); g.addColorStop(0, '#f0dcae'); g.addColorStop(1, '#6b4d22');
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(0, 0, r, 0, TAU); ctx.fill();
+  ctx.strokeStyle = 'rgba(40,25,10,.8)'; ctx.lineWidth = 4; ctx.beginPath(); for (let k = 0; k < 4; k++) { ctx.moveTo(0, 0); ctx.lineTo(Math.cos(k * PI / 2) * r * .8, Math.sin(k * PI / 2) * r * .8); } ctx.stroke();
+  ctx.fillStyle = '#2a1d0c'; ctx.beginPath(); ctx.arc(0, 0, 7, 0, TAU); ctx.fill();
+  ctx.restore();
+}
+function drawPulley(p, a = 1, o = {}) {        // p: rope pulled at the free end (px); the load rises p/4
+  const d = p / 4, Ly = PU.ly0 - d, hy = PU.hand0 + p, { uy, r } = PU;
+  if (a <= .003) return { Ly, hy };
+  ctx.save(); ctx.globalAlpha = a;
+  ctx.fillStyle = '#1b2230'; ctx.fillRect(400, 100, 460, 26); ctx.fillStyle = 'rgba(226,189,107,.8)'; ctx.fillRect(400, 124, 460, 2);
+  ctx.fillStyle = '#323c52'; ctx.fillRect(560, 126, 220, 60); ctx.fillRect(452, 126, 36, 60);
+  ctx.fillStyle = '#3d4862'; ctx.fillRect(584, 186, 12, 44); ctx.fillRect(744, 186, 12, 44); ctx.fillRect(504, Ly - 14, 12, 14); ctx.fillRect(664, Ly - 14, 12, 14);
+  ctx.fillStyle = '#2b3448'; ctx.beginPath(); ctx.roundRect(462, Ly - 14, 256, 28, 8); ctx.fill();
+  ctx.fillRect(578, Ly + 10, 24, 60);
+  ctx.restore();
+  // rope strands, each with dashes moving at its true material speed: 0, 2v, -2v, 4v, -4v
+  const strands = [[470, 186, Ly, 0], [550, Ly, uy, 2], [630, uy, Ly, -2], [710, Ly, uy, 4], [790, uy, hy, -4]];
+  const rope = (x, y0, y1) => { ctx.moveTo(x, y0); ctx.lineTo(x, y1); };
+  ctx.save(); ctx.globalAlpha = a; ctx.lineCap = 'round'; ctx.strokeStyle = '#5b4220'; ctx.lineWidth = 9; ctx.beginPath();
+  strands.forEach(([x, y0, y1]) => rope(x, y0, y1));
+  ctx.moveTo(470, Ly); ctx.arc(510, Ly, r, PI, 0, true); ctx.moveTo(550, uy); ctx.arc(590, uy, r, PI, TAU); ctx.moveTo(630, Ly); ctx.arc(670, Ly, r, PI, 0, true); ctx.moveTo(710, uy); ctx.arc(750, uy, r, PI, TAU);
+  ctx.stroke(); ctx.restore();
+  sheave(590, uy, r - 6, -2 * d / r, a); sheave(750, uy, r - 6, -4 * d / r, a); sheave(510, Ly, r - 6, d / r, a); sheave(670, Ly, r - 6, 3 * d / r, a);
+  neon(() => { strands.forEach(([x, y0, y1]) => rope(x, y0, y1)); }, C_WORK, 1.6, a * .55, false);
+  ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.lineCap = 'butt'; ctx.setLineDash([10, 22]); ctx.lineWidth = 4;
+  strands.forEach(([x, y0, y1, sp]) => { ctx.strokeStyle = `rgba(255,236,190,${.75 * a})`; ctx.lineDashOffset = (y1 > y0 ? 1 : -1) * sp * d; ctx.beginPath(); ctx.moveTo(x, y0); ctx.lineTo(x, y1); ctx.stroke(); });
+  ctx.restore();
+  // the load
+  ctx.save(); ctx.globalAlpha = a; ctx.strokeStyle = '#8a6a3a'; ctx.lineWidth = 6; ctx.beginPath(); ctx.moveTo(590, Ly + 70); ctx.lineTo(590, Ly + 96); ctx.stroke(); ctx.restore();
+  drawBlock(590, Ly + 170, 150, '100', a);
+  // the hand grip
+  ctx.save(); ctx.globalAlpha = a; ctx.fillStyle = '#e8c27a'; ctx.beginPath(); ctx.roundRect(770, hy, 40, 56, 12); ctx.fill(); ctx.restore();
+  glow(790, hy + 28, 40, C_FORCE, .6 * a);
+  return { Ly, hy };
+}
+
+// ======================================================================== gears + hydraulic press
+const GEARS = {};
+function gearSprite(R, teeth, key) {
+  if (GEARS[key]) return GEARS[key];
+  const S = Math.ceil(R + 30) * 2, c = mk(S, S), x = c.getContext('2d'), o = S / 2;
+  x.translate(o, o); x.beginPath();
+  for (let i = 0; i < teeth; i++) {
+    const a0 = i / teeth * TAU, dA = TAU / teeth;
+    const pts = [[R - 12, a0], [R - 12, a0 + dA * .12], [R + 13, a0 + dA * .28], [R + 13, a0 + dA * .5], [R - 12, a0 + dA * .66]];
+    pts.forEach(([rr, aa], k) => x[i === 0 && k === 0 ? 'moveTo' : 'lineTo'](Math.cos(aa) * rr, Math.sin(aa) * rr));
+  }
+  x.closePath();
+  const g = x.createRadialGradient(-R * .3, -R * .35, R * .1, 0, 0, R * 1.1); g.addColorStop(0, '#fff0c8'); g.addColorStop(.45, '#d8a956'); g.addColorStop(1, '#5d3d14');
+  x.fillStyle = g; x.shadowColor = 'rgba(255,190,100,.6)'; x.shadowBlur = 24; x.fill(); x.shadowBlur = 0;
+  x.strokeStyle = 'rgba(255,240,205,.9)'; x.lineWidth = 2; x.stroke();
+  x.globalCompositeOperation = 'destination-out';
+  const holes = R > 100 ? 6 : 4;
+  for (let k = 0; k < holes; k++) { const a = k / holes * TAU; x.beginPath(); x.arc(Math.cos(a) * R * .55, Math.sin(a) * R * .55, R * (R > 100 ? .2 : .17), 0, TAU); x.fill(); }
+  x.beginPath(); x.arc(0, 0, R * .1, 0, TAU); x.fill();
+  x.globalCompositeOperation = 'source-over'; x.strokeStyle = 'rgba(60,35,10,.6)'; x.lineWidth = 3; x.beginPath(); x.arc(0, 0, R * .78, 0, TAU); x.stroke();
+  return (GEARS[key] = c);
+}
+function drawGear(x, y, R, teeth, ang, a = 1) {
+  if (a <= .003) return;
+  const s = gearSprite(R, teeth, R + '_' + teeth);
+  ctx.save(); ctx.globalAlpha = a; ctx.translate(x, y); ctx.rotate(ang); ctx.drawImage(s, -s.width / 2, -s.height / 2); ctx.restore();
+}
+function drawPress(cx, base, s, a = 1) {     // small piston pushed down s, big piston rises s/4
+  const xs = cx - 190, xb = cx + 110, ws = 56, wb = 224, lvlS = base - 300 + s, lvlB = base - 300 - s / 4;
+  if (a <= .003) return { xs, xb, lvlS, lvlB };
+  ctx.save(); ctx.globalAlpha = a;
+  const fg = ctx.createLinearGradient(0, base - 340, 0, base); fg.addColorStop(0, 'rgba(60,170,230,.5)'); fg.addColorStop(1, 'rgba(14,50,120,.7)');
+  ctx.fillStyle = fg; ctx.beginPath();
+  ctx.moveTo(xs - ws / 2, lvlS); ctx.lineTo(xs + ws / 2, lvlS); ctx.lineTo(xs + ws / 2, base - 70); ctx.lineTo(xb - wb / 2, base - 70); ctx.lineTo(xb - wb / 2, lvlB); ctx.lineTo(xb + wb / 2, lvlB);
+  ctx.lineTo(xb + wb / 2, base); ctx.lineTo(xs - ws / 2, base); ctx.closePath(); ctx.fill();
+  ctx.strokeStyle = 'rgba(200,225,255,.7)'; ctx.lineWidth = 4; ctx.beginPath();
+  ctx.moveTo(xs - ws / 2 - 4, base - 420); ctx.lineTo(xs - ws / 2 - 4, base + 4); ctx.lineTo(xb + wb / 2 + 4, base + 4); ctx.lineTo(xb + wb / 2 + 4, base - 420);
+  ctx.moveTo(xs + ws / 2 + 4, base - 420); ctx.lineTo(xs + ws / 2 + 4, base - 66); ctx.lineTo(xb - wb / 2 - 4, base - 66); ctx.lineTo(xb - wb / 2 - 4, base - 420); ctx.stroke();
+  const pg = ctx.createLinearGradient(0, -12, 0, 12); pg.addColorStop(0, '#f6e3b6'); pg.addColorStop(1, '#6b4d22'); ctx.fillStyle = pg;
+  ctx.save(); ctx.translate(0, lvlS - 12); ctx.fillRect(xs - ws / 2, 0, ws, 18); ctx.restore(); ctx.fillRect(xs - 6, lvlS - 120, 12, 108);
+  ctx.save(); ctx.translate(0, lvlB - 12); ctx.fillRect(xb - wb / 2, 0, wb, 18); ctx.restore();
+  ctx.restore();
+  glow(xs, lvlS, 50, C_VIRT, .35 * a); glow(xb, lvlB, 120, C_VIRT, .25 * a);
+  drawBlock(xb, lvlB - 12 - 80, 160, '×4', a);
+  return { xs, xb, lvlS, lvlB };
+}
+
+// ======================================================================== energy landscape, hanging chain, arches
+const hfun = (x, z) => 1.05 * Math.exp(-((x - .9) ** 2 + (z - .2) ** 2) / .45) - 1.0 * Math.exp(-((x + 1.0) ** 2 + (z + .3) ** 2) / .55)
+  - .6 * Math.exp(-((x - .5) ** 2 + (z + 1.55) ** 2) / .35) + .5 * Math.exp(-((x + .6) ** 2 + (z - 1.5) ** 2) / .5);
+function proj3(x, y, z, yaw, pitch, cx, cy, F, D = 7) {
+  const c1 = Math.cos(yaw), s1 = Math.sin(yaw), X = x * c1 + z * s1, Z = -x * s1 + z * c1;
+  const c2 = Math.cos(pitch), s2 = Math.sin(pitch), Y2 = y * c2 - Z * s2, Z2 = y * s2 + Z * c2, d = D - Z2;
+  return [cx + F * X / d, cy - F * Y2 / d, d];
+}
+const TCOL = ['40,90,255', '40,150,255', '40,210,255', '60,240,220', '120,250,170', '200,240,120', '255,215,100', '255,170,80', '255,120,70', '255,80,110'];
+const TER = (() => {     // stationary points by gradient descent / ascent, and some rolling-ball paths
+  const gr = (x, z) => { const e = 1e-3; return [(hfun(x + e, z) - hfun(x - e, z)) / 2 / e, (hfun(x, z + e) - hfun(x, z - e)) / 2 / e]; };
+  const settle = (x, z, sg) => { for (let i = 0; i < 4000; i++) { const [gx, gz] = gr(x, z); x += sg * .01 * gx; z += sg * .01 * gz; } return [x, z]; };
+  const stat = [[-1, -.3, -1], [.5, -1.5, -1], [.9, .2, 1], [-.6, 1.5, 1]].map(([x, z, s]) => [...settle(x, z, s), s]);
+  const roll = [[-2.2, .8], [.2, -.6], [1.9, -1.9], [-1.9, -1.6]].map(([x, z]) => {
+    const P = []; let vx = 0, vz = 0;
+    for (let i = 0; i < 420; i++) { P.push([x, z]); const [gx, gz] = gr(x, z); vx = vx * .965 - .0016 * gx * 3; vz = vz * .965 - .0016 * gz * 3; x += vx; z += vz; }
+    return P;
+  });
+  return { stat, roll };
+})();
+function drawTerrain(lt, a, hs, yaw, pitch, cx = W / 2, cy = 600, F = 1650) {
+  const pr = (x, z, lift = 0) => proj3(x, hfun(x, z) * hs + lift, z, yaw, pitch, cx, cy, F);
+  if (a <= .003) return pr;
+  const N = 34, E = 2.6, P = [];
+  for (let j = 0; j <= N; j++) { const row = []; for (let i = 0; i <= N; i++) { const x = -E + 2 * E * i / N, z = -E + 2 * E * j / N, h = hfun(x, z) * hs; row.push([...proj3(x, h, z, yaw, pitch, cx, cy, F), h]); } P.push(row); }
+  const buckets = TCOL.map(() => []);
+  const seg = (p, q) => { const h = (p[3] + q[3]) / 2, b = clamp(Math.floor((h + 1.05) / 2.1 * TCOL.length), 0, TCOL.length - 1); buckets[b].push(p, q); };
+  for (let j = 0; j <= N; j++) for (let i = 0; i < N; i++) { seg(P[j][i], P[j][i + 1]); seg(P[i][j], P[i + 1][j]); }
+  ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.lineCap = 'round';
+  buckets.forEach((b, k) => {
+    if (!b.length) return; ctx.beginPath(); for (let i = 0; i < b.length; i += 2) { ctx.moveTo(b[i][0], b[i][1]); ctx.lineTo(b[i + 1][0], b[i + 1][1]); }
+    ctx.strokeStyle = `rgba(${TCOL[k]},${.16 * a})`; ctx.lineWidth = 6; ctx.stroke(); ctx.strokeStyle = `rgba(${TCOL[k]},${.85 * a})`; ctx.lineWidth = 1.6; ctx.stroke();
+  });
+  ctx.restore();
+  return pr;
+}
+function flatDisc(pr, x, z, r, col, a) {     // the horizontal tangent plane at a stationary point
+  if (a <= .003) return;
+  const h = hfun(x, z);
+  neon(() => { for (let k = 0; k <= 40; k++) { const t = k / 40 * TAU, p = pr(x + Math.cos(t) * r, z + Math.sin(t) * r, h - hfun(x + Math.cos(t) * r, z + Math.sin(t) * r)); ctx[k ? 'lineTo' : 'moveTo'](p[0], p[1]); } }, col, 2.4, a);
+}
+function ball(x, y, r, col, a = 1) {
+  if (a <= .003) return;
+  ctx.save(); ctx.globalAlpha = a; const g = ctx.createRadialGradient(x - r * .35, y - r * .4, r * .1, x, y, r);
+  g.addColorStop(0, '#ffffff'); g.addColorStop(.35, `rgb(${col})`); g.addColorStop(1, 'rgba(20,20,30,1)');
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); ctx.fill(); ctx.restore();
+  glow(x, y, r * 3, col, .5 * a);
+}
+// a catenary through (xm ± half, y0) with sag; points spaced evenly in arc length
+function catenary(xm, half, y0, sag, n) {
+  let lo = 1, hi = 1e5; for (let i = 0; i < 80; i++) { const m = (lo + hi) / 2; (m * Math.cosh(half / m) - m > sag) ? (lo = m) : (hi = m); }
+  const A = (lo + hi) / 2, S = 2 * A * Math.sinh(half / A), pts = [];
+  for (let i = 0; i < n; i++) { const s = -S / 2 + S * i / (n - 1), x = A * Math.asinh(s / A); pts.push([xm + x, y0 + (A * Math.cosh(half / A) - A * Math.cosh(x / A))]); }
+  return pts;
+}
+const CHAIN = { xm: W / 2, half: 380, y0: 300, sag: 390, n: 34 };
+CHAIN.pts = catenary(CHAIN.xm, CHAIN.half, CHAIN.y0, CHAIN.sag, CHAIN.n);
+const ARCHES = [[W / 2, 380, 390, 1], [W / 2, 250, 300, .8], [W / 2 - 560, 150, 250, .7], [W / 2 + 560, 150, 250, .7], [W / 2 - 330, 46, 470, .9], [W / 2 + 330, 46, 470, .9],
+  [W / 2 - 420, 40, 400, .8], [W / 2 + 420, 40, 400, .8], [W / 2, 52, 590, 1], [W / 2 - 760, 120, 180, .5], [W / 2 + 760, 120, 180, .5], [W / 2 - 110, 36, 520, .85], [W / 2 + 110, 36, 520, .85]]
+  .map(([xm, half, sag, w]) => ({ pts: catenary(xm, half, 860, sag, 40).map(([x, y]) => [x, 1720 - y]), w, xm, sag }));
+
+// ======================================================================== finite-element bridge
+const FEM = (() => {
+  const nodes = [], tris = [];
+  const grid = (f, nu, nv, comp) => {     // f(u,v) -> [x,y]; structured triangles
+    const base = nodes.length;
+    for (let j = 0; j <= nv; j++) for (let i = 0; i <= nu; i++) nodes.push(f(i / nu, j / nv));
+    for (let j = 0; j < nv; j++) for (let i = 0; i < nu; i++) {
+      const a = base + j * (nu + 1) + i, b = a + 1, c = a + nu + 1, d = c + 1;
+      tris.push([a, b, d, comp], [a, d, c, comp]);
+    }
+  };
+  grid((u, v) => [220 + 1480 * u, 640 + 46 * v], 52, 2, 0);
+  const archY = u => 640 - 360 * Math.sin(PI * u), ax = u => 300 + 1320 * u;
+  grid((u, v) => { const x = ax(u), y = archY(u) - 30 + 36 * v; return [x, y]; }, 64, 2, 1);
+  for (let k = 1; k <= 11; k++) { const u = k / 12, x = ax(u), y0 = archY(u) + 6; grid((uu, v) => [x - 6 + 12 * uu, y0 + (640 - y0) * v], 1, 5, 2); }
+  for (const x of [330, 1590]) grid((u, v) => [x - 34 + 68 * u, 686 + 214 * v], 2, 7, 3);
+  return { nodes, tris, archY, ax };
+})();
+const TURBO = ['30,40,120', '40,90,220', '30,170,255', '40,230,210', '110,250,120', '210,240,60', '255,190,40', '255,120,30', '235,50,40'];
+function femDraw(lt, a, xL, A, level) {
+  const { nodes, tris } = FEM;
+  const disp = ([x, y]) => [x, y + A * Math.exp(-(((x - xL) / 330) ** 2)) * (.35 + .65 * clamp((y - 280) / 380))];
+  if (a <= .003) return disp;
+  const P = nodes.map(disp);
+  const stress = (x, y, comp) => {
+    const g = Math.exp(-(((x - xL) / 230) ** 2));
+    if (comp === 0) return clamp(.15 + .85 * g * Math.abs((y - 663) / 23) + .1 * g);
+    if (comp === 1) return clamp(.35 + .35 * Math.exp(-(((x - xL) / 420) ** 2)) + .15 * Math.sin(x * .004));
+    if (comp === 2) return clamp(.2 + .75 * Math.exp(-(((x - xL) / 160) ** 2)));
+    return clamp(.3 + .4 * Math.exp(-(((x - xL) / 600) ** 2)));
+  };
+  const buckets = TURBO.map(() => []), edges = [];
+  const emit = (p, q, r, comp, orig) => {
+    const cx = (orig[0][0] + orig[1][0] + orig[2][0]) / 3, cy = (orig[0][1] + orig[1][1] + orig[2][1]) / 3;
+    const b = Math.min(TURBO.length - 1, Math.floor(stress(cx, cy, comp) * TURBO.length)); buckets[b].push(p, q, r); edges.push(p, q, r);
+  };
+  const mid = (p, q) => [(p[0] + q[0]) / 2, (p[1] + q[1]) / 2];
+  for (const [i, j, k, comp] of tris) {
+    const p = P[i], q = P[j], r = P[k], op = nodes[i], oq = nodes[j], or = nodes[k];
+    if (level < 1) emit(p, q, r, comp, [op, oq, or]);
+    else {
+      const pq = mid(p, q), qr = mid(q, r), rp = mid(r, p), opq = mid(op, oq), oqr = mid(oq, or), orp = mid(or, op);
+      emit(p, pq, rp, comp, [op, opq, orp]); emit(pq, q, qr, comp, [opq, oq, oqr]); emit(rp, qr, r, comp, [orp, oqr, or]); emit(pq, qr, rp, comp, [opq, oqr, orp]);
+    }
+  }
+  ctx.save(); ctx.globalAlpha = a;
+  buckets.forEach((b, k) => { if (!b.length) return; ctx.beginPath(); for (let i = 0; i < b.length; i += 3) { ctx.moveTo(...b[i]); ctx.lineTo(...b[i + 1]); ctx.lineTo(...b[i + 2]); ctx.closePath(); } ctx.fillStyle = `rgba(${TURBO[k]},.82)`; ctx.fill(); });
+  ctx.globalCompositeOperation = 'lighter'; ctx.beginPath(); for (let i = 0; i < edges.length; i += 3) { ctx.moveTo(...edges[i]); ctx.lineTo(...edges[i + 1]); ctx.lineTo(...edges[i + 2]); ctx.closePath(); }
+  ctx.strokeStyle = 'rgba(220,240,255,.28)'; ctx.lineWidth = 1; ctx.stroke();
+  ctx.restore();
+  return disp;
+}
+
+// ======================================================================== Lagrange's book: pages painted once
+const PAGES = [];
+function paintPages() {
+  if (PAGES.length) return PAGES;
+  const pw = 520, ph = 680;
+  const page = (fn, flip) => { const c = mk(pw, ph), x = c.getContext('2d');
+    const g = x.createLinearGradient(flip ? pw : 0, 0, flip ? 0 : pw, 0); g.addColorStop(0, '#7d6844'); g.addColorStop(.08, '#a89068'); g.addColorStop(1, '#9a8260');
+    x.fillStyle = g; x.fillRect(0, 0, pw, ph);
+    const r = mulberry(pw + PAGES.length); for (let i = 0; i < 260; i++) { x.fillStyle = `rgba(120,90,40,${r() * .05})`; x.beginPath(); x.arc(r() * pw, r() * ph, r() * 20, 0, TAU); x.fill(); }
+    x.fillStyle = '#20150a'; x.textAlign = 'center'; x.textBaseline = 'middle'; fn(x, pw, ph); return c; };
+  PAGES.push(page((x, w) => {
+    x.font = `700 46px ${F_EN}`; x.fillText('MÉCHANIQUE', w / 2, 170); x.fillText('ANALITIQUE', w / 2, 230);
+    x.fillRect(w / 2 - 120, 280, 240, 2); x.font = `italic 500 34px ${F_IT}`; x.fillText('Par M. de la Grange', w / 2, 330);
+    x.font = `400 26px ${F_EN}`; x.fillText('A PARIS', w / 2, 520); x.font = `400 24px ${F_EN}`; x.fillText('M. DCC. LXXXVIII', w / 2, 570);
+  }, false));
+  const eqs = [['P dp + Q dq + R dr + &c. = 0', 36], ['S (d²x/dt² δx + d²y/dt² δy + d²z/dt² δz) m', 25], ['+ S (P δp + Q δq + R δr + &c.) m = 0', 25], ['δL = 0,  δM = 0,  δN = 0', 28],
+    ['λ dL + μ dM + ν dN + &c.', 28], ['d (δT / δφ̇) − δT / δφ + δV / δφ = 0', 26], ['S m (x δx + y δy + z δz) = 0', 25], ['T = S m (dx² + dy² + dz²) / 2dt²', 25]];
+  for (let p = 0; p < 3; p++) PAGES.push(page((x, w, h) => {
+    x.font = `500 22px ${F_IT}`; x.fillText(['SECTION SECONDE', 'SECTION QUATRIÈME', 'SECONDE PARTIE'][p], w / 2, 70);
+    for (let k = 0; k < 9; k++) {
+      const [e, sz] = eqs[(k + p * 3) % eqs.length], y = 140 + k * 62;
+      x.font = `italic 400 ${sz - 2}px ${F_MATH}`; x.fillText(e, w / 2, y);
+      x.fillStyle = 'rgba(32,21,10,.35)'; for (let l = 0; l < 2; l++) x.fillRect(50, y + 20 + l * 10, w - 100 - ((k * 37 + l * 61) % 140), 3); x.fillStyle = '#20150a';
+    }
+  }, p % 2 === 0));
+  return PAGES;
+}
+function drawBook(cx, cy, lt, a, flipT, sc = .8) {
+  if (a <= .003) return;
+  const P = paintPages(), pw = 520, ph = 680, sk = .9;
+  ctx.save(); ctx.globalAlpha = a; ctx.translate(cx, cy); ctx.scale(sc, sc); ctx.transform(1, 0, -.12, sk, 0, 0);
+  ctx.shadowColor = 'rgba(255,200,120,.25)'; ctx.shadowBlur = 50; ctx.fillStyle = '#2a1a0b'; ctx.fillRect(-pw - 18, -ph / 2 - 14, 2 * pw + 36, ph + 28); ctx.shadowBlur = 0;
+  const nf = Math.floor(flipT), f = flipT - nf, turning = f > .02 && f < .98;
+  const left = n => n === 0 ? P[0] : P[1 + ((n + 1) % 3)], right = n => P[1 + (n % 3)];
+  ctx.drawImage(f >= .98 ? left(nf + 1) : left(nf), -pw, -ph / 2);
+  ctx.drawImage(turning || f >= .98 ? right(nf + 1) : right(nf), 0, -ph / 2);
+  if (turning) {                          // the turning page: front shrinks into the spine, back opens on the left
+    const k = Math.cos(eio(f) * PI);
+    ctx.save(); ctx.scale(k, 1);
+    if (k > 0) ctx.drawImage(right(nf), 0, -ph / 2); else { ctx.scale(-1, 1); ctx.drawImage(left(nf + 1), -pw, -ph / 2); }
+    ctx.fillStyle = `rgba(0,0,0,${.35 * (1 - Math.abs(k))})`; ctx.fillRect(k > 0 ? 0 : -pw, -ph / 2, pw, ph);
+    ctx.restore();
+  }
+  const sg = ctx.createLinearGradient(-40, 0, 40, 0); sg.addColorStop(0, 'rgba(0,0,0,0)'); sg.addColorStop(.5, 'rgba(40,20,5,.45)'); sg.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = sg; ctx.fillRect(-40, -ph / 2, 80, ph);
+  ctx.restore();
+}
+
+// ======================================================================== scene library
+const SC = [];
+function scene(o) { SC.push(o); return o; }
+const camPush = (amt = .045) => (lt, d) => ({ z: 1 + amt * lt / d, x: 10 * Math.sin(lt * .21), y: 6 * Math.sin(lt * .17 + 1) });
+const camArc = (amt = .04) => (lt, d) => ({ z: 1 + amt * Math.sin(PI * clamp(lt / d)) });
+const PR = Array.from({ length: 2400 }, () => ({ delay: rnd(), ea: rnd() * TAU, ed: .4 + rnd() * 1.1, sz: .8 + rnd() * 1.8 }));
+const jitter = (lt, amt = 14) => { const f = Math.floor(lt * 12); return hash1(f) > .88 ? (hash1(f + .5) - .5) * amt : 0; };
+const TH0 = -.21;                                   // the size of the imagined tilt, exaggerated so it can be seen
+
+// ---------------------------------------------------------------- 0. cold open: flash-cuts → the question → a lever assembles and "moves" in imagination
+const TEASER = [[2, 2, 19.2, '2 × 1 = 1 × 2', F_MATH], [5, 5, 3.4, '× 4', F_MATH], [8, 6, 15.6, '1717', F_EN], [10, 7, 6.8, '1788', F_EN],
+  [12, 3, 10.4, 'δr', F_MATH], [14, 6, 6.6, 'δU = 0', F_MATH], [15, 4, 6.4, 'Σ F · δr', F_MATH], [16, 7, 1.7, '−ma', F_MATH],
+  [17, 5, 15.2, 'F × d', F_MATH], [18, 7, 15.5, '10⁶', F_MATH], [19, 4, 20.2, '= 0', F_MATH]];
+const TEASE_END = 20 * EIGHTH;
+scene({ start: 0, len: 6, fi: .01, bloom: 1,
+  subs: [[10.9, 13.1, '答案，藏在一个从未发生的动作里——', 'The answer hides in a motion that never happens—'], [13.3, 15.8, '想象它，动一下。', 'Imagine it moving, just a little.']],
+  sfx: [[0, 'thump'], ...TEASER.map(([e], i) => [e * EIGHTH, 'hit', { k: .45 + i * .05 }]), [TEASE_END - .45, 'suck', { dur: .45 }], [TEASE_END, 'ring', { dur: 2.5 }],
+    [7.4, 'heart'], [8.9, 'heart'], [10.6, 'sparkle', { dur: 3.4 }], [13.45, 'swish', { pitch: 1.2 }], [14.6, 'swell', { dur: 1.4 }]],
+  cam: (lt, d) => lt < TEASE_END ? { z: 1 } : { z: 1 + .06 * (lt - TEASE_END) / (d - TEASE_END) },
+  shot: lt => lt < 2 * EIGHTH ? -1 : lt < TEASE_END ? Math.floor(lt / EIGHTH) : 99,
+  draw(lt) {
+    ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+    if (lt < 2 * EIGHTH) { const p = Math.exp(-lt * 5) * .9 + .1; glow(W / 2, H / 2, 40 + 60 * p, '180,210,255', p); return; }
+    if (lt < TEASE_END) {
+      const e = lt / EIGHTH; let c = TEASER.length - 1; while (TEASER[c][0] > e) c--;
+      const [e0, si, t0, word, font] = TEASER[c], e1 = c + 1 < TEASER.length ? TEASER[c + 1][0] : 20, f = lt - e0 * EIGHTH, len = (e1 - e0) * EIGHTH;
+      ctx.save(); const z = 1.14 - .1 * eout(clamp(f / len)); ctx.translate(W / 2, H / 2); ctx.scale(z, z); ctx.translate(-W / 2, -H / 2);
+      SC[si].draw(t0 + f, SC[si].d); ctx.restore();
+      dim(.42);
+      const size = clamp(1350 / Math.max(2.2, word.length * .6), 80, 250);
+      glitchText(word, W / 2, H / 2, size, clamp(f / .05) * (1 - sstep(len - .06, len, f) * .6), font, c * 13 + Math.floor(f * 30));
+      ctx.fillStyle = `rgba(255,255,255,${.55 * Math.exp(-f * 16)})`; ctx.fillRect(0, 0, W, H);
+      return;
+    }
+    const qa = win(lt, 7.3, 10.75, .45, .4);
+    if (qa > 0) {
+      text('一座大桥，一架吊车，一根撬棍，一串垂下的项链——', W / 2, 470, { size: 54, weight: 700, ls: 4, alpha: qa * sstep(7.3, 7.8, lt), color: '#f3ead8' });
+      text('A bridge, a crane, a crowbar, a hanging necklace—', W / 2, 532, { font: F_IT, style: 'italic', size: 30, color: '#cfc6b4', alpha: qa * sstep(7.5, 8, lt) });
+      text('它们凭什么，一动不动？', W / 2, 640, { size: 76, weight: 900, ls: 10, alpha: qa * sstep(8.9, 9.35, lt), color: '#fff', glow: 'rgba(255,210,140,.55)', blur: 30 });
+      text('What keeps them perfectly still?', W / 2, 712, { font: F_IT, style: 'italic', size: 32, color: '#e2cf9f', alpha: qa * sstep(9.1, 9.5, lt) });
+    }
+    if (lt < 10.4) return;
+    const k0 = lt - 10.4;
+    nebula('blue', lt + 30, sstep(0, 2.5, k0) * .85);
+    const P = leverPts(), cx = LV.cx, cy = LV.cy;
+    ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.fillStyle = '#bfe3ff';
+    P.forEach((p, i) => {
+      const r = PR[i], k = clamp((k0 - r.delay * 1.8 - Math.abs(p[0] - cx) / 1600) / 1.6); if (k <= 0) return;
+      const e = eio(k), sx = cx + Math.cos(r.ea) * r.ed * 900, sy = cy + Math.sin(r.ea) * r.ed * 520, sw = Math.sin(k * PI) * 40;
+      ctx.globalAlpha = clamp(k * 3) * (.5 + .5 * e) * (1 - sstep(4.2, 5.2, k0) * .7);
+      ctx.fillRect(lerp(sx, p[0], e) + Math.cos(r.ea + 1) * sw, lerp(sy, p[1], e) + Math.sin(r.ea + 1) * sw, r.sz * (2 - e), r.sz * (2 - e));
+    });
+    ctx.restore();
+    drawLever(0, { a: sstep(3.0, 4.2, k0) * .95 });
+    const g = Math.sin(PI * clamp((lt - 13.4) / 1.6)), gth = TH0 * eio(clamp(g * 1.4));
+    drawLever(gth, { ghost: true, a: win(lt, 13.2, 16, .35, .6), jx: jitter(lt) });
+    if (lt > 14.6) { const g2 = sstep(14.6, 16, lt); glow(cx, cy - 80, 950 * g2, '255,230,190', g2 * .8); }
+  } });
+
+// ---------------------------------------------------------------- 1. title: the lever bursts into the title, then re-forms
+const TITLE = { str: '虚功原理', size: 210, ls: 40, cy: 430 };
+let TPTS = null;
+function titlePts() {
+  if (TPTS) return TPTS;
+  const pts = samplePts(() => { ctx.font = `900 ${TITLE.size}px ${F_ZH}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = '#fff';
+    titleLayout(TITLE.str, W / 2, TITLE.size, TITLE.ls).forEach((p, i) => ctx.fillText([...TITLE.str][i], p.x, TITLE.cy)); }, 2400, 3, 77);
+  if (fontsReady) TPTS = pts;
+  return pts;
+}
+const RING_SYM = ['δW', 'δr', 'F · δr', 'Σ', '∂U/∂q', '−ma', 'δq', 'λ', 'τ', 'Fᵢ', 'Q', '= 0', 'δφ', 'μ', '∇V', 'T − V', 'δL', 'ẍ'];
+scene({ start: 6, len: 3, fi: .01, fo: 0, bloom: 1.05,
+  subs: [], sfx: [[.45, 'whoosh', { dur: 1.7 }], [2.45, 'shimmer'], [6.75, 'sparkle', { dur: 1.2 }], [6.85, 'whoosh', { dur: 1.1, rev: 1 }]],
+  cam: camArc(.03),
+  draw(lt) {
+    nebula('gold', lt + 50, .8);
+    const cx = W / 2, cy = TITLE.cy, TP = titlePts(), LP = leverPts();
+    glow(cx, cy, 820, '255,170,80', .2 * sstep(1.5, 3, lt) * (1 - sstep(6.6, 7.4, lt)));
+    const partA = (1 - sstep(2.3, 3.1, lt)) + sstep(6.7, 6.95, lt) * (1 - sstep(7.6, 8, lt));
+    if (partA > 0) {
+      ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.fillStyle = lt < 6 ? '#ffe2b0' : '#ffe9c8';
+      LP.forEach((S, i) => {
+        const p = PR[i], Bx = S[0] + Math.cos(p.ea) * (90 + 260 * p.ed), By = S[1] + Math.sin(p.ea) * (90 + 260 * p.ed), [Qx, Qy] = TP[i];
+        let x, y;
+        if (lt < .5) { const e = eout(lt / .5); x = lerp(S[0], Bx, e); y = lerp(S[1], By, e); }
+        else if (lt < 6.7) {
+          const s = eio(clamp((lt - .5 - p.delay * .5) / 1.5)), mx = (Bx + Qx) / 2 + (By - Qy) * .35, my = (By + Qy) / 2 - (Bx - Qx) * .35;
+          x = (1 - s) * (1 - s) * Bx + 2 * (1 - s) * s * mx + s * s * Qx; y = (1 - s) * (1 - s) * By + 2 * (1 - s) * s * my + s * s * Qy;
+        } else {
+          const s = eio(clamp((lt - 6.7 - p.delay * .25) / .9));
+          x = lerp(Qx, S[0], s) + Math.sin(s * PI) * Math.cos(p.ea) * 70; y = lerp(Qy, S[1], s) + Math.sin(s * PI) * Math.sin(p.ea) * 70;
+        }
+        ctx.globalAlpha = .9 * clamp(partA); ctx.fillRect(x, y, p.sz * 1.3, p.sz * 1.3);
+      });
+      ctx.restore();
+    }
+    const ta = sstep(2.0, 2.7, lt) * (1 - sstep(6.55, 6.95, lt));
+    titleWord(TITLE.str, cx, cy, TITLE.size, lt, 1.6, 0, TITLE.ls, ta, 0);
+    flare(lerp(cx - 820, cx + 820, eio(clamp((lt - 2.35) / 1.6))), cy, win(lt, 2.35, 4.4, .12, 1.4));
+    RING_SYM.forEach((sym, i) => {
+      const a = i / RING_SYM.length * TAU + lt * .2, z = Math.sin(a), x = cx + Math.cos(a) * 800, y = cy + 40 + z * 180;
+      text(sym, x, y, { font: F_MATH, style: 'italic', size: 26 + 14 * (z + 1), color: '#f0d9a8', alpha: win(lt, 2.8, 6.8, .8, .4) * (.2 + .3 * (z + 1)) * sstep(430, 640, Math.abs(x - cx)) });
+    });
+    text('THE PRINCIPLE OF VIRTUAL WORK', cx, cy + 175, { font: F_EN, size: 40, ls: 14, color: '#e6d3a8', alpha: win(lt, 2.9, 6.7, .8, .4) });
+    text('—  平 衡 之 美  —', cx, cy + 245, { size: 36, ls: 10, color: '#cbb58a', alpha: win(lt, 3.6, 6.7, .8, .4) });
+    drawLever(0, { a: sstep(7.45, 8, lt) });
+  } });
+
+// ---------------------------------------------------------------- 2. Ⅰ balance: the old way vs. "what if it moved?"
+function workRect(x, y, w, h, a, o = {}) {     // gold area = work; height edge = force (orange), width edge = distance (cyan)
+  if (a <= .003) return;
+  ctx.save(); ctx.globalAlpha = a; const g = ctx.createLinearGradient(x - w / 2, y - h / 2, x + w / 2, y + h / 2);
+  g.addColorStop(0, 'rgba(255,226,160,.92)'); g.addColorStop(.5, 'rgba(214,160,72,.85)'); g.addColorStop(1, 'rgba(120,76,24,.85)');
+  ctx.shadowColor = 'rgba(255,200,110,.7)'; ctx.shadowBlur = 40; ctx.fillStyle = g; ctx.fillRect(x - w / 2, y - h / 2, w, h); ctx.restore();
+  if (o.edges !== false) {
+    neon(() => { ctx.moveTo(x - w / 2, y + h / 2); ctx.lineTo(x - w / 2, y - h / 2); }, C_FORCE, 3, a);
+    neon(() => { ctx.moveTo(x - w / 2, y + h / 2); ctx.lineTo(x + w / 2, y + h / 2); }, C_VIRT, 3, a);
+  }
+}
+scene({ start: 9, len: 8, fi: 0, mb: 3, ch: ['I', '平衡', 'BALANCE'],
+  subs: [[.4, 4.4, '一切静止的东西，都是几股力在暗中较劲——恰好打成平手。', 'Everything at rest is a silent tug-of-war that ends in a perfect tie.'],
+    [4.8, 9.0, '老办法：把每一个力都画出来，逐个列方程。', 'The old way: draw every single force, and write an equation for each.'],
+    [9.4, 13.0, '虚功原理换了个问法：假如它动一下呢？', 'Virtual work asks a different question: what if it moved, just a little?'],
+    [13.3, 17.0, '重的一端下降 1 格，轻的一端上升 2 格——', 'The heavy end drops one step; the light end rises two—'],
+    [17.4, 21.0, '重量 × 距离：2 × 1 = 1 × 2。一得一失，正好抵消，所以平衡。', 'Weight × distance: 2 × 1 = 1 × 2. Gain and loss cancel out—so it balances.']],
+  sfx: [[.7, 'pop', { midi: 72 }], [1.0, 'pop', { midi: 76 }], [1.3, 'pop', { midi: 79 }], [4.7, 'whoosh', { dur: 1.0 }],
+    ...Array.from({ length: 14 }, (_, i) => [5.05 + i * .22, 'tick', { gain: .3, pitch: 1 + i * .04 }]),
+    [9.25, 'whoosh', { dur: 1.0, rev: 1 }], [9.7, 'scan', { dur: 3.2 }], [13.35, 'swish'], [14.1, 'blip', { midi: 79 }], [14.5, 'blip', { midi: 86 }], [16.0, 'shimmer'],
+    [18.0, 'swish', { pitch: .8 }], [18.67, 'boom'], [19.33, 'ding', { midi: 81 }], [20.0, 'ding', { midi: 86 }]],
+  cam: camArc(.03),
+  draw(lt) {
+    nebula('blue', lt, .9); starfield(lt, .45, 6);
+    ground(LV.cy + BEAM_H / 2 + 164, .8);
+    const oldA = win(lt, 4.6, 9.4, .7, .7), la = 1 - .88 * oldA;
+    const wob = -.035 * Math.sin(lt * 4.2) * Math.exp(-lt * 1.1) * sstep(0, .25, lt);
+    drawLever(wob, { a: la });
+    // the forces at rest: two weights down, the support up
+    const fa = win(lt, .6, 4.8, .4, .5) * la;
+    if (fa > 0) {
+      const [hx, hy] = lpt(LV, wob, -1, -BEAM_H / 2), [sx, sy] = lpt(LV, wob, 2, -BEAM_H / 2), g = k => eout(clamp((lt - .6 - k * .3) / .5));
+      arrow(hx, hy + 6, hx, hy + 6 + 124 * g(0), C_FORCE, { a: fa, label: '2', lx: -30, ly: -14, lstyle: '' });
+      arrow(sx, sy + 6, sx, sy + 6 + 62 * g(1), C_FORCE, { a: fa, label: '1', lx: 30, ly: -10, lstyle: '' });
+      const by = LV.cy + BEAM_H / 2 + 8;
+      arrow(LV.cx, by + 186 * g(2), LV.cx, by, C_CONS, { a: fa * .9, label: '3', lx: 30, ly: 150, lstyle: '' });
+      text('重力 · weight', hx, hy + 175, { size: 26, color: `rgb(${C_FORCE})`, alpha: fa * sstep(1.2, 1.8, lt) });
+      text('支撑力 · support', LV.cx + 230, LV.cy + 100, { size: 26, color: `rgb(${C_CONS})`, alpha: fa * sstep(1.5, 2.1, lt) });
+    }
+    drawTruss(lt, oldA, 5.0); drawEqPile(lt, oldA, 5.2);
+    // the imagined nudge
+    let gth = 0;
+    if (lt > 9.6) gth = lt < 13.3 ? TH0 * (.5 - .5 * Math.cos((lt - 9.6) * 3 * PI / 3.7)) : TH0;
+    const ga = win(lt, 9.5, 21.4, .5, .3);
+    drawLever(gth, { ghost: true, a: ga, jx: jitter(lt) });
+    text('如果……动一下？', LV.cx, 250, { size: 64, weight: 900, ls: 8, color: '#bff1ff', alpha: win(lt, 9.8, 13.2, .5, .5), glow: `rgba(${C_VIRT},.8)`, blur: 30 });
+    text('WHAT IF IT MOVED?', LV.cx, 322, { font: F_EN, size: 28, ls: 12, color: `rgb(${C_VIRT})`, alpha: win(lt, 10.1, 13.2, .5, .5) });
+    const da = win(lt, 13.3, 21.4, .4, .3);
+    if (da > 0) {
+      for (const [M, side, lab, bx] of [[MASS[0], -1, '1', -100], [MASS[1], 1, '2', 92]]) {
+        const [x0, y0] = massC(M, 0), [x1, y1] = massC(M, TH0), k = eout(clamp((lt - 13.4 - (side > 0 ? .4 : 0)) / .6));
+        arrow(x0, y0, lerp(x0, x1, k), lerp(y0, y1, k), C_VIRT, { a: da * k, w: 4, head: 16 });
+        ctx.save(); ctx.globalAlpha = da * .7; ctx.setLineDash([6, 8]); ctx.strokeStyle = `rgba(${C_VIRT},.7)`; ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x0 + bx * 1.15, y0); ctx.moveTo(x1, y1); ctx.lineTo(x0 + bx * 1.15, y1); ctx.stroke(); ctx.restore();
+        bracket(x0 + bx, y0, lerp(y0, y1, k), side, C_VIRT, da * k, lab, 44);
+      }
+      text('下降 1 格', massC(MASS[0], 0)[0] - 210, massC(MASS[0], 0)[1] + 10, { size: 28, color: '#bff1ff', alpha: da * sstep(14, 14.6, lt) });
+      text('上升 2 格', massC(MASS[1], 0)[0] + 210, massC(MASS[1], 0)[1] - 30, { size: 28, color: '#bff1ff', alpha: da * sstep(14.4, 15, lt) });
+    }
+    // gold areas: weight × distance on each side, then laid on top of each other
+    const ra = win(lt, 16, 21.4, .6, .4);
+    if (ra > 0) {
+      const k = 58, m = eio(clamp((lt - 18.0) / .67)), y = 270;
+      const xl = lerp(LV.cx - 360, LV.cx, m), xr = lerp(LV.cx + 360, LV.cx, m);
+      workRect(xl, y, k, 2 * k, ra * (1 - .3 * m));
+      ctx.save(); ctx.translate(xr, y); ctx.rotate(m * PI / 2); ctx.translate(-xr, -y); workRect(xr, y, 2 * k, k, ra * (1 - .3 * m)); ctx.restore();
+      const la2 = ra * (1 - m);
+      text('2 × 1', LV.cx - 360, y + 110, { font: F_MATH, size: 46, color: '#ffe6b0', alpha: la2, glow: 'rgba(255,200,110,.7)' });
+      text('1 × 2', LV.cx + 360, y + 110, { font: F_MATH, size: 46, color: '#ffe6b0', alpha: la2, glow: 'rgba(255,200,110,.7)' });
+      text('+', LV.cx - 470, y, { font: F_MATH, size: 70, color: `rgb(${C_WORK})`, alpha: la2 * sstep(16.6, 17, lt) });
+      text('−', LV.cx + 220, y, { font: F_MATH, size: 70, color: '#bff1ff', alpha: la2 * sstep(16.8, 17.2, lt) });
+      text('重量 × 距离 · weight × distance', LV.cx, 150, { size: 30, color: '#f3e3bd', alpha: ra * sstep(16.3, 16.9, lt) * (1 - sstep(18, 18.5, lt)) });
+      if (lt > 18.6) {
+        const z = sstep(18.6, 19.2, lt) * ra;
+        glow(LV.cx, y, 260 * z, '255,220,150', .35 * z * Math.exp(-(lt - 18.67) * 1.5) + .08 * z);
+        text('+2 − 2 = 0', LV.cx, y + 130, { font: F_MATH, size: 64, color: '#fff3d6', alpha: z, glow: 'rgba(255,200,110,.9)', blur: 30 });
+      }
+    }
+  } });
+
+// ---------------------------------------------------------------- 3. Ⅱ virtual: imagined, infinitesimal, rule-abiding; and what "work" means
+const WIRE = x => 600 + 110 * Math.sin((x - 160) / 300) + 30 * Math.sin(x / 97);
+const WIRE_D = x => (WIRE(x + .5) - WIRE(x - .5));
+scene({ start: 17, len: 6, mb: 3, ch: ['II', '虚位移', 'VIRTUAL DISPLACEMENT'],
+  subs: [[.4, 4.2, '这一「动」，从来没有真正发生。', 'That motion never actually happens.'],
+    [4.4, 8.4, '它只存在于想象里，而且小到不能再小——叫「虚位移」δr。', 'It exists only in imagination, and is vanishingly small: a virtual displacement, δr.'],
+    [8.8, 12.4, '但想象也得守规矩：绳子不能断，轮子不能脱轨。', 'But imagination must obey the rules: ropes don’t snap, wheels don’t leave the track.'],
+    [12.6, 15.8, '力 × 顺着力的方向走过的距离，就是「功」。', 'Force times the distance moved along it: that is work.']],
+  sfx: [[.3, 'glitch'], [2.2, 'glitch'], [4.5, 'zoom', { dur: 3.6 }], ...[5.2, 6.1, 7.0, 7.9].map((t, i) => [t, 'blip', { midi: 84 + i * 3 }]),
+    ...Array.from({ length: 12 }, (_, k) => [9.0 + k * .1, 'tick', { gain: .25, pitch: 1.2 + k * .03 }]), [10.4, 'chime', { midi: 81 }], [10.8, 'shatter'],
+    [12.7, 'swish'], [13.3, 'swish', { pitch: 1.3 }], [14.1, 'shimmer'], [14.8, 'ding', { midi: 86 }]],
+  cam: camPush(.04),
+  draw(lt) {
+    bgGrad('#071426', '#010309'); nebula('blue', lt + 80, .45); blueprint(1, lt);
+    // A: the hologram
+    const aA = 1 - sstep(4.2, 5.0, lt) * .7 - sstep(8.4, 9.0, lt) * .3;
+    const gth = TH0 * (.5 - .5 * Math.cos(lt * 2.4));
+    drawLever(0, { a: aA * (1 - sstep(8.4, 9, lt)) * (1 - .6 * win(lt, 4.4, 8.8, .6, .5)) });
+    drawLever(gth, { ghost: true, a: aA * (1 - sstep(8.4, 9, lt)), jx: jitter(lt, 20) });
+    const ha = win(lt, .4, 4.4, .4, .6);
+    glitchText('虚', W / 2, 250, 170, ha, F_ZH, Math.floor(lt * 8), '#cff6ff');
+    text('VIRTUAL', W / 2, 372, { font: F_EN, size: 34, ls: 20, color: `rgb(${C_VIRT})`, alpha: ha });
+    text('只在想象中 · imagined, never real', W / 2, 160, { size: 28, color: '#9fdcf0', alpha: ha * sstep(1.2, 1.8, lt) });
+    // B: zoom into the tiny nudge
+    const za = win(lt, 4.4, 8.7, .5, .5);
+    if (za > 0) {
+      const lx = 1440, ly = 360, R = 230, [tx, ty] = lpt(LV, 0, 2, BEAM_H / 2 + MASS[1].size);
+      ctx.save(); ctx.globalAlpha = za * .6; ctx.setLineDash([8, 10]); ctx.strokeStyle = `rgba(${C_VIRT},.8)`; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(tx, ty); ctx.lineTo(lx - R * .7, ly + R * .7); ctx.stroke(); ctx.restore();
+      glow(tx, ty, 26, C_VIRT, za);
+      ctx.save(); ctx.beginPath(); ctx.arc(lx, ly, R * eout(clamp((lt - 4.4) / .5)), 0, TAU); ctx.clip();
+      ctx.fillStyle = `rgba(2,10,22,${.92 * za})`; ctx.fillRect(lx - R, ly - R, 2 * R, 2 * R);
+      const z = (lt - 4.4) * 1.1;
+      for (let k = -1; k < 6; k++) { const rr = 14 * Math.pow(2.2, k + (z % 1)); ring(lx, ly, rr, C_VIRT, za * .5 * sstep(8, 40, rr) * (1 - sstep(170, 240, rr)), 1.5); }
+      for (let k = 0; k < 12; k++) { const a = k / 12 * TAU; ctx.strokeStyle = `rgba(${C_VIRT},${.12 * za})`; ctx.beginPath(); ctx.moveTo(lx, ly); ctx.lineTo(lx + Math.cos(a) * R, ly + Math.sin(a) * R); ctx.stroke(); }
+      arrow(lx - 50, ly + 40, lx + 50, ly - 40, C_VIRT, { a: za, w: 4, head: 18, label: 'δr', lx: 34, ly: -12, lsize: 40 });
+      ctx.restore();
+      ring(lx, ly, R * eout(clamp((lt - 4.4) / .5)), C_VIRT, za, 2.5);
+      const mag = Math.min(4, Math.floor((lt - 4.6) / .9) + 1);
+      if (lt > 4.6) text(['× 10', '× 10²', '× 10³', '× 10⁴'][mag - 1], lx, ly + R + 44, { font: F_MATH, size: 34, color: '#bff1ff', alpha: za });
+      text('δr', 470, 290, { font: F_MATH, style: 'italic', size: 210, color: '#d8f8ff', alpha: za * sstep(5.0, 5.6, lt), glow: `rgba(${C_VIRT},.9)`, blur: 40 });
+      text('虚位移 · virtual displacement', 470, 430, { size: 34, weight: 700, color: '#bff1ff', alpha: za * sstep(5.4, 6, lt) });
+      text('δ = 小到不能再小 · infinitesimally small', 470, 482, { size: 26, color: '#8fc9dc', alpha: za * sstep(5.8, 6.4, lt) });
+    }
+    // C: allowed and forbidden nudges of a bead on a wire
+    const ca = win(lt, 8.8, 12.6, .5, .45);
+    if (ca > 0) {
+      neon(() => { for (let x = 100; x <= 1820; x += 8) ctx[x === 100 ? 'moveTo' : 'lineTo'](x, WIRE(x)); }, C_STEEL, 3, ca);
+      const bx0 = 960, ta = Math.atan(WIRE_D(bx0)), slide = sstep(11.2, 11.6, lt) * Math.sin((lt - 11.2) * 3) * 110;
+      for (let k = 0; k < 12; k++) {
+        const ang = ta + k * PI / 6, ok = k % 6 === 0, kk = clamp((lt - 9.0 - k * .1) / .25) * ca, cls = sstep(10.3, 10.5, lt);
+        if (kk <= 0) continue;
+        const x0 = bx0 + Math.cos(ang) * 30, y0 = WIRE(bx0) + Math.sin(ang) * 30, L = 190;
+        if (ok) { arrow(x0, y0, x0 + Math.cos(ang) * L * eout(kk), y0 + Math.sin(ang) * L * eout(kk), cls > 0 ? C_OK : C_VIRT, { a: kk, w: 4, head: 18 }); continue; }
+        const sh = clamp((lt - 10.8) / 1.0);
+        if (sh <= 0) { arrow(x0, y0, x0 + Math.cos(ang) * L * eout(kk), y0 + Math.sin(ang) * L * eout(kk), cls > 0 ? C_BAD : C_VIRT, { a: kk, w: 4, head: 18 }); continue; }
+        for (let j = 0; j < 4; j++) {    // shatter
+          const h = hash1(k * 9 + j), s0 = j / 4 * L, s1 = (j + 1) / 4 * L, vx = Math.cos(ang) * (60 + 140 * h) + (h - .5) * 120, vy = Math.sin(ang) * (60 + 140 * h) - 60 + 380 * sh;
+          const px = x0 + Math.cos(ang) * (s0 + s1) / 2 + vx * sh, py = y0 + Math.sin(ang) * (s0 + s1) / 2 + vy * sh, rot = (h - .5) * 6 * sh;
+          ctx.save(); ctx.translate(px, py); ctx.rotate(ang + rot);
+          neon(() => { ctx.moveTo(-(s1 - s0) / 2, 0); ctx.lineTo((s1 - s0) / 2, 0); }, C_BAD, 3.5, ca * (1 - sh)); ctx.restore();
+        }
+      }
+      const bxx = bx0 + slide; ball(bxx, WIRE(bxx), 22, '255,215,150', ca);
+      text('✓ 沿着轨道 · along the track', 1320, 380, { size: 30, color: `rgb(${C_OK})`, alpha: ca * sstep(10.4, 10.9, lt), glow: `rgba(${C_OK},.6)` });
+      text('✗ 脱离轨道 · off the track', 640, 880, { size: 30, color: `rgb(${C_BAD})`, alpha: ca * sstep(10.6, 11.1, lt), glow: `rgba(${C_BAD},.6)` });
+    }
+    // D: work = force along the motion × distance
+    const wa = win(lt, 12.6, 16.2, .5, .4);
+    if (wa > 0) {
+      ground(790, wa);
+      const bx = 560, by = 790 - 70, ang = -35 * PI / 180, FL = 330, fx = bx + Math.cos(ang) * FL, fy = by + Math.sin(ang) * FL;
+      drawBlock(bx, by, 140, '', wa);
+      const k1 = eout(clamp((lt - 12.8) / .5)), k2 = eout(clamp((lt - 13.3) / .5)), k3 = eout(clamp((lt - 13.9) / .5));
+      arrow(bx, by, lerp(bx, fx, k1), lerp(by, fy, k1), C_FORCE, { a: wa * k1, label: 'F', lx: 26, ly: -26, lsize: 48 });
+      arrow(bx, by, bx + 300 * k2, by, C_VIRT, { a: wa * k2, w: 5, dash: [16, 10], label: 'δr', lx: 10, ly: 44, lsize: 42 });
+      if (k3 > 0) {
+        ctx.save(); ctx.globalAlpha = wa * k3; ctx.setLineDash([8, 8]); ctx.strokeStyle = 'rgba(255,220,170,.8)'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(fx, fy); ctx.lineTo(fx, fy + (by - fy) * k3); ctx.stroke(); ctx.restore();
+        neon(() => { ctx.moveTo(bx, by + 2); ctx.lineTo(lerp(bx, fx, k3), by + 2); }, C_WORK, 7, wa * k3);
+        text('顺着运动方向的那部分力', (bx + fx) / 2, by + 95, { size: 26, color: '#ffe0a8', alpha: wa * k3 });
+      }
+      const ra = eout(clamp((lt - 14.1) / .6)) * wa, rw = 300, rh = (fx - bx) * .62;
+      workRect(1340, 600, rw * ra, rh * ra, ra);
+      text('功', 1340, 600, { size: 64, weight: 900, color: '#3a2508', alpha: ra * .85 });
+      text('δW = F · δr', 1340, 360, { font: F_MATH, style: 'italic', size: 70, color: '#fff0cc', alpha: wa * sstep(14.5, 15, lt), glow: 'rgba(255,200,110,.85)', blur: 30 });
+      text('功 = 力 × 顺着力走过的距离', 1340, 440, { size: 30, color: '#f3e3bd', alpha: wa * sstep(14.8, 15.3, lt) });
+    }
+  } });
+
+// ---------------------------------------------------------------- 4. Ⅲ the principle: a scissor lift, its ledger, and the helpers that vanish
+const NUDGE = [0, 1, -1, .6, -1.3, 1.1, -.7, 1.4, -1, .8, -1.2, .9, -.6, 1];
+const nudgeAt = lt => { const t = (lt - 1.6) / (2 * BEAT); if (t < 0) return 0; const i = Math.floor(t), f = t - i; return lerp(NUDGE[Math.min(i, NUDGE.length - 1)], NUDGE[Math.min(i + 1, NUDGE.length - 1)], eio(clamp(f / .45))); };
+const ROWS = [['箱子 ①', 'box'], ['箱子 ②', 'box'], ['箱子 ③', 'box'], ['连杆 · 底层', 'link'], ['连杆 · 中层', 'link'], ['连杆 · 顶层', 'link'], ['推力 P', 'push']];
+const CONS = (() => {        // the constraint forces: pairs at every pin, the floor and the rail
+  const g = slGeo(SL.phi0), out = [], r = mulberry(31);
+  [...g.Lp, ...g.Rp, ...g.Cp].forEach(([x, y], i) => { if (i === 0) return; const a = r() * TAU, L = 46 + r() * 22; out.push([x, y, a, L], [x, y, a + PI, L]); });
+  out.push([g.Lp[0][0], g.Lp[0][1], -PI / 2 - .5, 110], [g.Rp[0][0], g.Rp[0][1], -PI / 2, 92]);
+  return out.map(([x, y, a, L], i) => ({ x, y, a, L, parts: Array.from({ length: 10 }, (_, j) => ({ s: r(), vx: (r() - .5) * 260, vy: -80 - r() * 300, d: r() * .5 })) }));
+})();
+scene({ start: 23, len: 9, mb: 3, ch: ['III', '原理', 'THE PRINCIPLE'],
+  subs: [[.4, 4.8, '于是有了这条原理：一个系统，如果是平衡的——', 'Hence the principle: if a system is in balance—'],
+    [5.0, 10.0, '那么不管你怎样想象它动一下，所有力做的虚功，加起来都恰好是零。', 'then however you imagine nudging it, the virtual work of all the forces adds up to exactly zero.'],
+    [10.4, 15.0, '更妙的是：铰链、地面、轨道这些「幕后帮手」，一点功也不做——', 'Better still: hinges, floors and rails—the hidden helpers—do no work at all—'],
+    [15.2, 18.4, '所以它们从方程里，一齐消失。', 'so they vanish from the equation, all at once.'],
+    [19.2, 23.4, '只剩下你真正关心的力。这，就是虚功原理。', 'Only the forces you care about remain. This is the principle of virtual work.']],
+  sfx: [[.4, 'swell', { dur: 1.5 }], ...NUDGE.slice(1).map((_, i) => [1.6 + i * 2 * BEAT, 'tick', { gain: .45, pitch: 1 + (i % 4) * .08 }]), [5.1, 'chime', { midi: 81 }],
+    [10.3, 'whoosh', { dur: 1.2 }], ...Array.from({ length: 10 }, (_, i) => [10.6 + i * .14, 'pop', { midi: 70 + i }]), [15.2, 'dissolve', { dur: 2.6 }],
+    [18.05, 'suck', { dur: .6 }], [18.67, 'boom'], ...[74, 77, 81, 86].map((m, k) => [19.67 + k * BEAT, 'ding', { midi: m }])],
+  cam: camPush(.04),
+  draw(lt) {
+    nebula('blue', lt + 140, .8); starfield(lt, .35, 5);
+    const phi = SL.phi0, nd = nudgeAt(lt), gphi = phi + nd * .1, fa = 1 - sstep(18.4, 19.2, lt) * .75;
+    ground(SL.y0 + 30, .7 * fa);
+    drawLift(phi, { a: fa });
+    const ga = win(lt, 1.5, 18.6, .4, .4) * fa;
+    if (ga > 0) {
+      drawLift(gphi, { ghost: true, a: ga * Math.min(1, Math.abs(nd) * 3) });
+      const g0 = slGeo(phi), g1 = slGeo(gphi);
+      [[g0.Lp, g1.Lp], [g0.Rp, g1.Rp], [g0.Cp, g1.Cp], [g0.boxes, g1.boxes]].forEach(([A, B]) => A.forEach((p, i) => { if (Math.hypot(B[i][0] - p[0], B[i][1] - p[1]) > 6) arrow(p[0], p[1], B[i][0], B[i][1], C_VIRT, { a: ga * .9, w: 3, head: 13 }); }));
+    }
+    // the applied forces: three weights and the push
+    const af = win(lt, .8, 24, .5, .1) * fa, g0 = slGeo(phi);
+    g0.boxes.forEach(([x, y], i) => arrow(x, y + 40, x, y + 40 + 90 * eout(clamp((lt - .9 - i * .15) / .4)), C_FORCE, { a: af * .9, w: 4, head: 16 }));
+    arrow(g0.xr + 160, SL.y0 - 4, g0.xr + 34, SL.y0 - 4, C_FORCE, { a: af, label: 'P', lx: 70, ly: -34, lsize: 44 });
+    // the ledger
+    const L0 = 1170, LW = 600, top = 240, lh = 50, la = win(lt, 1.8, 24, .5, .1) * (1 - sstep(18.4, 19.0, lt));
+    if (la > 0) {
+      const { rows } = slTerms(phi, nd * .01), sum = rows.reduce((a, b) => a + b, 0);
+      ctx.save(); ctx.globalAlpha = la * .55; ctx.fillStyle = 'rgba(8,14,30,.75)'; ctx.beginPath(); ctx.roundRect(L0 - 30, top - 70, LW + 60, 620 + 105 * sstep(11.2, 12.4, lt) * (1 - sstep(16.0, 17.2, lt)), 18); ctx.fill();
+      ctx.strokeStyle = 'rgba(226,189,107,.5)'; ctx.lineWidth = 1.5; ctx.stroke(); ctx.restore();
+      text('虚功账本', L0, top - 24, { size: 34, weight: 900, color: '#f3d9a0', alpha: la, align: 'left' });
+      text('VIRTUAL-WORK LEDGER', L0 + LW, top - 22, { font: F_EN, size: 18, ls: 4, color: '#cdb88e', alpha: la, align: 'right' });
+      const cons = sstep(11.2, 12.4, lt) * (1 - sstep(16.0, 17.2, lt)), consH = cons * 3 * lh * .7;
+      ROWS.forEach(([name, kind], i) => {
+        const k = clamp((lt - 2.0 - i * .12) / .3) * la, y = top + 40 + i * lh; if (k <= 0) return;
+        const v = rows[i], col = kind === 'push' ? `rgb(${C_FORCE})` : '#ffd7a6';
+        text(name, L0, y, { size: 30, color: col, alpha: k, align: 'left' });
+        text((v >= 0 ? '+' : '−') + Math.abs(v).toFixed(2), L0 + LW, y, { font: F_MATH, size: 34, color: v >= 0 ? '#ffe7b0' : '#bfe6ff', alpha: k, align: 'right' });
+      });
+      ['铰链 · hinges', '地面 · floor', '轨道 · rail'].forEach((name, i) => {
+        const y = top + 40 + 7 * lh + i * lh * .7 * cons; if (cons <= .02) return;
+        text(name, L0, y, { size: 28, color: `rgb(${C_CONS})`, alpha: la * cons, align: 'left' });
+        text('0.00', L0 + LW, y, { font: F_MATH, size: 32, color: `rgb(${C_CONS})`, alpha: la * cons, align: 'right' });
+        text('不做功', L0 + LW - 150, y, { size: 24, color: '#ffb0d8', alpha: la * cons * sstep(12.6, 13.2, lt), align: 'right' });
+      });
+      const sy = top + 40 + 7 * lh + consH + 10;
+      ctx.save(); ctx.globalAlpha = la; ctx.fillStyle = 'rgba(226,189,107,.8)'; ctx.fillRect(L0, sy, LW, 2); ctx.restore();
+      const z = Math.abs(sum) < .005 ? 0 : sum;
+      text('Σ δW', L0, sy + 56, { font: F_MATH, style: 'italic', size: 44, color: '#fff0cc', alpha: la * sstep(2.8, 3.2, lt), align: 'left' });
+      text('= ' + z.toFixed(2), L0 + LW, sy + 56, { font: F_MATH, size: 52, color: '#fff3d6', alpha: la * sstep(2.8, 3.2, lt), align: 'right', glow: 'rgba(255,205,110,.95)', blur: 26 });
+    }
+    // the statement
+    const sa = win(lt, 5.0, 18.6, .5, .4);
+    if (sa > 0) {
+      const s1 = '平衡  ⟺  ', s2 = 'δW = Σ Fᵢ · δrᵢ = 0', w1 = measure(s1, 50, 700), w2 = measure(s2, 56, 400, F_MATH, 'italic'), x0 = W / 2 - (w1 + w2) / 2;
+      text(s1, x0, 130, { size: 50, weight: 700, color: '#fff', alpha: sa, align: 'left', glow: 'rgba(255,200,120,.6)' });
+      text(s2, x0 + w1, 130, { font: F_MATH, style: 'italic', size: 56, color: '#ffe6b0', alpha: sa * sstep(5.4, 5.9, lt), align: 'left', glow: 'rgba(255,200,110,.8)', blur: 22 });
+    }
+    // constraint forces appear, then dissolve
+    CONS.forEach((c, i) => {
+      const k = clamp((lt - 10.6 - i * .045) / .3), vanish = clamp((lt - 15.2 - c.parts[0].d * .8) / 1.6);
+      if (k <= 0) return;
+      const a = k * (1 - vanish) * fa, x1 = c.x + Math.cos(c.a) * (12 + c.L), y1 = c.y + Math.sin(c.a) * (12 + c.L);
+      if (a > .01) arrow(c.x + Math.cos(c.a) * 12, c.y + Math.sin(c.a) * 12, x1, y1, C_CONS, { a, w: 3.5, head: 15 });
+      if (i % 7 === 0 && vanish <= 0) text('?', x1 + Math.cos(c.a) * 18, y1 + Math.sin(c.a) * 18, { font: F_MATH, size: 30, color: `rgb(${C_CONS})`, alpha: a * sstep(11.6, 12.2, lt) });
+      if (vanish > 0 && vanish < 1) for (const p of c.parts) {
+        const t = clamp(vanish * 1.2 - p.d * .2), px = lerp(c.x, x1, p.s) + p.vx * t, py = lerp(c.y, y1, p.s) + p.vy * t;
+        glow(px, py, 10 * (1 - t) + 3, t < .3 ? C_CONS : '255,220,240', (1 - t) * fa);
+      }
+    });
+    // reveal
+    if (lt > 18.4) {
+      const dA = sstep(18.4, 19.2, lt) * (1 - sstep(23.4, 24, lt));
+      dim(dA * .55); sunburst(W / 2, 470, lt, dA * .8, 16);
+      titleWord('δW = 0', W / 2, 450, 230, lt, 18.67, .08, 18, dA, .6, F_MATH, 400);
+      text('THE PRINCIPLE OF VIRTUAL WORK', W / 2, 620, { font: F_EN, size: 36, ls: 14, color: '#e6d3a8', alpha: sstep(19.2, 20, lt) * dA });
+      [['想象一动', 'δr', 340, 250], ['只看主动力', 'Fᵢ', 1580, 250], ['逐个算功', 'Fᵢ · δrᵢ', 340, 730], ['加起来为零', 'Σ = 0', 1580, 730]].forEach(([zh, f, x, y], i) => {
+        const k = sstep(19.67 + i * BEAT, 19.67 + i * BEAT + .35, lt) * dA;
+        text(zh, x, y, { size: 50, weight: 700, color: '#fff', alpha: k, glow: 'rgba(255,200,120,.6)' });
+        text(f, x, y + 66, { font: F_MATH, style: 'italic', size: 38, color: '#e8c77a', alpha: k });
+      });
+    }
+  } });
+
+// ---------------------------------------------------------------- 5. Ⅳ machines: the same bookkeeping, everywhere
+const PRESS = lt => 160 * (.5 - .5 * Math.cos(clamp((lt - 9.2) / 3.4) * TAU * .9));
+const HYP = { ox: 470, oy: 800, A: 60000 };
+const HMARK = [[180, '杠杆', 'lever'], [330, '滑轮', 'pulley'], [560, '齿轮', 'gears'], [880, '液压', 'press']];
+scene({ start: 32, len: 7, mb: 3, ch: ['IV', '机械', 'MACHINES'],
+  subs: [[.4, 4.4, '滑轮组：拉动绳子 4 米，重物只升高 1 米。', 'A block and tackle: pull 4 metres of rope, and the load rises only 1 metre.'],
+    [4.6, 8.6, '虚功一算：拉力 × 4 = 重量 × 1——只需四分之一的力。', 'Virtual work does the sum: pull × 4 = weight × 1. A quarter of the force.'],
+    [8.8, 12.8, '齿轮、千斤顶、液压机……记的都是同一本账。', 'Gears, jacks, hydraulic presses… all keep the very same ledger.'],
+    [13.0, 18.4, '省了力，就得多走路：力 × 距离，一分也不会少。', 'Save on force, pay in distance: force × distance never comes up short.']],
+  sfx: [[.8, 'rope', { dur: 3.0 }], [4.7, 'chime', { midi: 81 }], [5.6, 'ding', { midi: 86 }], [7.8, 'rope', { dur: .9 }], [8.7, 'whoosh', { dur: 1 }], [9.0, 'gears', { dur: 3.8 }],
+    [9.4, 'hydro', { dur: 3.2 }], [12.9, 'whoosh', { dur: 1.2 }], ...HMARK.map((_, i) => [13.9 + i * 1.05, 'pop', { midi: 79 + i * 3 }]), [17.6, 'shimmer']],
+  cam: camArc(.035),
+  draw(lt) {
+    nebula('gold', lt + 300, .55); starfield(lt, .35, -4);
+    const pa = 1 - sstep(8.5, 9.2, lt);
+    if (pa > 0) {
+      const p = 360 * eio(clamp((lt - .8) / 3)) * (1 - eio(clamp((lt - 7.8) / .9)));
+      ground(930, pa * .6);
+      const { Ly, hy } = drawPulley(p, pa);
+      bracket(880, PU.hand0 + 28, hy + 28, 1, C_VIRT, pa * sstep(1.0, 1.4, lt), '4', 50);
+      bracket(470, PU.ly0 + 95, Ly + 95, -1, C_VIRT, pa * sstep(1.0, 1.4, lt), '1', 50);
+      arrow(590, Ly + 250, 590, Ly + 250 + 120, C_FORCE, { a: pa * sstep(.3, .7, lt), label: '100', lx: 64, ly: -30, lstyle: '', lsize: 40 });
+      arrow(790, hy + 62, 790, hy + 62 + 30, C_FORCE, { a: pa * sstep(.5, .9, lt), label: '25', lx: 46, ly: -14, lstyle: '', lsize: 40 });
+      const ea = win(lt, 4.6, 8.9, .4, .4);
+      text('拉力 × 4  =  重量 × 1', 1380, 360, { size: 44, weight: 700, color: '#fff', alpha: ea, glow: 'rgba(255,200,120,.5)' });
+      text('25 × 4  =  100 × 1', 1380, 470, { font: F_MATH, size: 80, color: '#ffe6b0', alpha: ea * sstep(5.4, 5.9, lt), glow: 'rgba(255,200,110,.85)', blur: 30 });
+      text('⟹  拉力只需重量的 ¼', 1380, 580, { size: 40, color: '#f3e3bd', alpha: ea * sstep(6.2, 6.7, lt) });
+    }
+    const ma = win(lt, 8.9, 13.2, .5, .5);
+    if (ma > 0) {
+      const ang = (lt - 8.9) * .7, gx = 470, gy = 540;
+      drawGear(gx, gy, 170, 30, ang, ma); drawGear(gx + 170 + 57 + 2, gy, 57, 10, -3 * ang + PI / 10 + PI, ma);
+      neon(() => ctx.arc(gx, gy, 230, -2.2, -2.2 + .9), C_VIRT, 3, ma * .8); neon(() => ctx.arc(gx + 229, gy, 110, -1.2, -1.2 + 2.7), C_VIRT, 3, ma * .8);
+      text('慢 · 力大', gx, gy + 270, { size: 34, weight: 700, color: '#ffd9a0', alpha: ma }); text('slow · strong', gx, gy + 315, { font: F_IT, style: 'italic', size: 28, color: '#d9c49a', alpha: ma });
+      text('快 · 力小', gx + 229, gy - 170, { size: 34, weight: 700, color: '#bff1ff', alpha: ma }); text('fast · light', gx + 229, gy - 128, { font: F_IT, style: 'italic', size: 28, color: '#9fd2e6', alpha: ma });
+      text('齿轮  GEARS', gx + 110, 170, { font: F_EN, size: 30, ls: 8, color: '#e6d3a8', alpha: ma });
+      const s = PRESS(lt), r = drawPress(1430, 900, s, ma);
+      bracket(r.xs - 70, 900 - 300, r.lvlS, -1, C_VIRT, ma, '4', 44); bracket(r.xb + 150, 900 - 300, r.lvlB, 1, C_VIRT, ma, '1', 44);
+      text('液压机  HYDRAULIC PRESS', 1430, 170, { font: F_EN, size: 30, ls: 8, color: '#e6d3a8', alpha: ma });
+    }
+    const ha = win(lt, 13.0, 18.9, .5, .5);
+    if (ha > 0) {
+      const { ox, oy, A } = HYP, k = eout(clamp((lt - 13.1) / .7));
+      neon(() => { ctx.moveTo(ox, oy - 620 * k); ctx.lineTo(ox, oy); ctx.lineTo(ox + 1100 * k, oy); }, '230,220,200', 2, ha * .8, false);
+      text('力  force', ox - 20, oy - 645, { size: 32, color: `rgb(${C_FORCE})`, alpha: ha * k, align: 'left' });
+      text('距离  distance', ox + 1100, oy + 44, { size: 32, color: `rgb(${C_VIRT})`, alpha: ha * k, align: 'right' });
+      const cur = sstep(13.4, 14.2, lt);
+      neon(() => { for (let d = 100; d <= 100 + 900 * cur; d += 6) ctx[d === 100 ? 'moveTo' : 'lineTo'](ox + d, oy - A / d); }, C_WORK, 3, ha);
+      const idx = Math.min(3, Math.max(0, Math.floor((lt - 13.9) / 1.05))), f = eio(clamp(((lt - 13.9) / 1.05 - idx) / .55));
+      const d0 = HMARK[Math.max(0, idx - 1)][0], d1 = HMARK[idx][0], dd = lt < 13.9 ? HMARK[0][0] : Math.exp(lerp(Math.log(idx ? d0 : d1), Math.log(d1), f));
+      HMARK.forEach(([d, zh, en], j) => {
+        const seen = sstep(13.9 + j * 1.05, 14.2 + j * 1.05, lt) * ha;
+        if (seen <= 0) return;
+        ctx.save(); ctx.globalAlpha = seen * .35; ctx.strokeStyle = `rgba(${C_WORK},1)`; ctx.setLineDash([5, 7]); ctx.strokeRect(ox, oy - A / d, d, A / d); ctx.restore();
+        glow(ox + d, oy - A / d, 26, C_WORK, seen);
+        text(zh + ' ' + en, ox + d + 24, oy - A / d - 30, { size: 28, color: '#ffe0a8', alpha: seen, align: 'left' });
+      });
+      const rk = sstep(13.7, 14.0, lt) * ha;
+      if (rk > 0) {
+        workRect(ox + dd / 2, oy - A / dd / 2, dd, A / dd, rk * .7);
+        const fs = clamp(dd / 4.4, 24, 38), ty = oy - Math.min(A / dd / 2, 70);
+        text('力 × 距离', ox + dd / 2, ty - fs * .45, { size: fs, weight: 900, color: '#2a1904', alpha: rk });
+        text('= 同样多的功', ox + dd / 2, ty + fs * .6, { size: fs * .68, weight: 700, color: '#2a1904', alpha: rk * .9 });
+      }
+      text('面积永远不变', 1250, 300, { size: 46, weight: 900, color: '#fff', alpha: ha * sstep(16.8, 17.4, lt), glow: 'rgba(255,200,120,.7)', blur: 26 });
+      text('the area never changes', 1250, 362, { font: F_IT, style: 'italic', size: 32, color: '#e2cf9f', alpha: ha * sstep(17.0, 17.6, lt) });
+    }
+  } });
+
+// ---------------------------------------------------------------- 6. Ⅴ energy: flat spots, valleys and peaks, a hanging chain becomes an arch
+const PROF = x => .95 * Math.exp(-((x - 1.1) ** 2) / .4) - .95 * Math.exp(-((x + 1.1) ** 2) / .5) + .08 * x;
+const PX = x => W / 2 + x * 300, PY = y => 560 - y * 250;
+const PMIN = (() => { let b = -1.1; for (let i = 0; i < 2000; i++) b -= .01 * (PROF(b + 1e-3) - PROF(b - 1e-3)) / 2e-3; return b; })();
+const PMAX = (() => { let b = 1.1; for (let i = 0; i < 2000; i++) b += .01 * (PROF(b + 1e-3) - PROF(b - 1e-3)) / 2e-3; return b; })();
+function profBall(x, col, a, lift = 24) { const d = (PROF(x + 1e-3) - PROF(x - 1e-3)) / 2e-3, nx = -(-d * 250 / 300), ny = -1, L = Math.hypot(nx, ny); ball(PX(x) + nx / L * lift, PY(PROF(x)) + ny / L * lift, 22, col, a); }
+scene({ start: 39, len: 8, mb: 3, ch: ['V', '能量地形', 'THE ENERGY LANDSCAPE'],
+  subs: [[.4, 4.4, '如果力来自重力或弹簧，虚功就等于能量的变化。', 'When forces come from gravity or springs, virtual work is simply a change in energy.'],
+    [4.6, 8.6, '平衡的位置，就是能量地形上「平坦」的地方。', 'Balance lives wherever the energy landscape is perfectly flat.'],
+    [8.8, 12.6, '谷底，稳如泰山；山顶，一碰就倒。', 'In a valley: rock-steady. On a peak: one touch, and it falls.'],
+    [12.8, 16.8, '一串项链自然垂下，找到的正是能量最低的形状——', 'A hanging necklace settles, all by itself, into the shape of lowest energy—'],
+    [17.0, 21.0, '把它倒过来，就是最稳的拱。高迪就用倒挂的链子设计教堂。', 'Turn it upside down and you get the strongest arch. Gaudí designed churches with hanging chains.']],
+  sfx: [[.3, 'swell', { dur: 2.5 }], [4.6, 'roll', { dur: 3.2 }], [5.4, 'chime', { midi: 81 }], [6.0, 'chime', { midi: 86 }], [9.6, 'swish'], [10.1, 'success'], [10.3, 'fall', { dur: 1.6 }],
+    [13.0, 'chain', { dur: 2.2 }], [17.0, 'whoosh', { dur: 1.6 }], [18.67, 'boom'], [19.0, 'sparkle', { dur: 2.2 }]],
+  cam: camPush(.035),
+  draw(lt) {
+    nebula('teal', lt + 400, .85); starfield(lt, .4, 4);
+    const ta = 1 - sstep(8.6, 9.4, lt);
+    if (ta > 0) {
+      const hs = eout(clamp((lt - .2) / 2.5)), yaw = .5 + lt * .06, pitch = .62;
+      const pr = drawTerrain(lt, ta, hs, yaw, pitch, W / 2, 610, 1650);
+      text('高度 = 能量', 300, 200, { size: 46, weight: 900, color: '#fff', alpha: ta * win(lt, .8, 9, .5, .1), align: 'left', glow: 'rgba(80,230,220,.6)' });
+      text('height = energy', 300, 256, { font: F_IT, style: 'italic', size: 32, color: '#a6e8de', alpha: ta * win(lt, 1.0, 9, .5, .1), align: 'left' });
+      const fa = sstep(4.8, 5.6, lt) * ta;
+      TER.stat.forEach(([x, z, s], i) => { flatDisc(pr, x, z, .38, s < 0 ? C_OK : C_FORCE, fa * sstep(5.2 + i * .25, 5.6 + i * .25, lt)); });
+      const [mx, mz] = TER.stat[0], mp = pr(mx, mz, .15);
+      text('δU = 0', mp[0] - 40, mp[1] + 80, { font: F_MATH, style: 'italic', size: 44, color: `rgb(${C_OK})`, alpha: fa * sstep(6.2, 6.7, lt), glow: `rgba(${C_OK},.7)` });
+      text('平坦 · flat', mp[0] - 40, mp[1] + 130, { size: 30, color: '#c8ffe0', alpha: fa * sstep(6.4, 6.9, lt) });
+      const ra = win(lt, 4.4, 9.4, .4, .6) * ta;
+      if (ra > 0) TER.roll.forEach((P, k) => { const i = Math.min(P.length - 1, Math.floor((lt - 4.6) * 70)), [x, z] = P[Math.max(0, i)], p = pr(x, z, .12); ball(p[0], p[1], 15, '255,225,170', ra); });
+    }
+    const pa = win(lt, 8.8, 12.9, .6, .4);
+    if (pa > 0) {
+      const xs = []; for (let x = -3.1; x <= 3.1; x += .04) xs.push(x);
+      ctx.save(); ctx.globalAlpha = pa; const g = ctx.createLinearGradient(0, 300, 0, 900); g.addColorStop(0, 'rgba(60,220,210,.35)'); g.addColorStop(1, 'rgba(10,40,60,0)');
+      ctx.fillStyle = g; ctx.beginPath(); ctx.moveTo(PX(xs[0]), 900); xs.forEach(x => ctx.lineTo(PX(x), PY(PROF(x)))); ctx.lineTo(PX(xs[xs.length - 1]), 900); ctx.fill(); ctx.restore();
+      neon(() => xs.forEach((x, i) => ctx[i ? 'lineTo' : 'moveTo'](PX(x), PY(PROF(x)))), '120,250,230', 3, pa);
+      const nud = win(lt, 9.6, 10.4, .2, .2), t1 = Math.max(0, lt - 10.2);
+      const xv = lt < 10.2 ? PMIN : PMIN + .35 * Math.exp(-t1 * 1.1) * Math.cos(t1 * 5.5);
+      const xh = lt < 10.2 ? PMAX : Math.min(3.0, PMAX + .03 * (Math.exp(t1 * 3.2) - 1));
+      if (nud > 0) { ghostFill(() => ctx.arc(PX(PMIN + .35), PY(PROF(PMIN + .35)) - 24, 22, 0, TAU), C_VIRT, pa * nud); ghostFill(() => ctx.arc(PX(PMAX + .3), PY(PROF(PMAX + .3)) - 24, 22, 0, TAU), C_VIRT, pa * nud);
+        arrow(PX(PMIN) + 26, PY(PROF(PMIN)) - 60, PX(PMIN + .35), PY(PROF(PMIN + .35)) - 60, C_VIRT, { a: pa * nud, w: 3, head: 14 });
+        arrow(PX(PMAX) + 26, PY(PROF(PMAX)) - 60, PX(PMAX + .3), PY(PROF(PMAX + .3)) - 60, C_VIRT, { a: pa * nud, w: 3, head: 14 }); }
+      if (lt > 10.2) { ctx.save(); ctx.globalCompositeOperation = 'lighter'; for (let k = 0; k < 14; k++) { const tt = Math.max(0, t1 - k * .04), x = Math.min(3.0, PMAX + .03 * (Math.exp(tt * 3.2) - 1)); glow(PX(x), PY(PROF(x)) - 24, 18, C_BAD, pa * .25 * (1 - k / 14)); } ctx.restore(); }
+      profBall(xv, '150,255,190', pa); profBall(xh, '255,150,120', pa);
+      text('稳定 ✓', PX(PMIN) - 230, PY(PROF(PMIN)) - 40, { size: 40, weight: 900, color: `rgb(${C_OK})`, alpha: pa * sstep(10.4, 10.9, lt), glow: `rgba(${C_OK},.6)` });
+      text('stable', PX(PMIN) - 230, PY(PROF(PMIN)) + 8, { font: F_IT, style: 'italic', size: 30, color: '#b9f5cf', alpha: pa * sstep(10.5, 11, lt) });
+      text('不稳定 ✗', PX(PMAX), PY(PROF(PMAX)) - 110, { size: 40, weight: 900, color: `rgb(${C_BAD})`, alpha: pa * sstep(10.7, 11.2, lt), glow: `rgba(${C_BAD},.6)` });
+      text('unstable', PX(PMAX), PY(PROF(PMAX)) - 62, { font: F_IT, style: 'italic', size: 30, color: '#ffc0b4', alpha: pa * sstep(10.8, 11.3, lt) });
+    }
+    const ca = sstep(12.8, 13.3, lt);
+    if (ca > 0) {
+      const { xm, half, y0, n, pts } = CHAIN, t = Math.max(0, lt - 13.0), f = lt < 13 ? 0 : 1 - Math.exp(-t / .55) * Math.cos(t * 5);
+      const flip = PI * eio(clamp((lt - 17.0) / 1.4)), drop = (860 - y0) * eio(clamp((lt - 17.15) / 1.3)), sx = 1 + .12 * Math.sin(flip);
+      const P = pts.map(([x, y], i) => { const xf = xm - half + 2 * half * i / (n - 1), X = lerp(xf, x, clamp(f)), Y = y0 + (y - y0) * f; return [xm + (X - xm) * sx, y0 + (Y - y0) * Math.cos(flip) + drop]; });
+      const arch = sstep(18.4, 19.4, lt);
+      ground(860, sstep(17.4, 18.4, lt));
+      neon(() => P.forEach((p, i) => ctx[i ? 'lineTo' : 'moveTo'](...p)), C_WORK, 2.2, ca);
+      P.forEach(([x, y], i) => { glow(x, y, 16, '255,215,140', ca * .8); ctx.save(); ctx.globalAlpha = ca; ctx.fillStyle = '#fff1cc'; ctx.beginPath(); ctx.arc(x, y, 5, 0, TAU); ctx.fill(); ctx.restore(); });
+      glow(xm - half * sx, y0 + drop, 34, '255,240,210', ca); glow(xm + half * sx, y0 + drop, 34, '255,240,210', ca);
+      const la = win(lt, 14.4, 17.0, .5, .4);
+      text('悬链线', xm, 760, { size: 46, weight: 900, color: '#fff', alpha: la, glow: 'rgba(255,200,120,.6)' });
+      text('catenary · lowest energy', xm, 815, { font: F_IT, style: 'italic', size: 30, color: '#e2cf9f', alpha: la });
+      if (arch > 0) {
+        ARCHES.slice(1).forEach((A, j) => {
+          const k = clamp((lt - 18.67 - j * .1) / .9); if (k <= 0) return;
+          const tower = A.pts[A.pts.length - 1][0] - A.pts[0][0] < 200, e = eout(k), apex = 860 - A.sag;
+          if (tower) {                       // a spire rising out of the ground
+            const yCut = lerp(860, apex, e);
+            ctx.save(); ctx.beginPath(); ctx.rect(0, yCut - 2, W, 900); ctx.clip();
+            const g = ctx.createLinearGradient(0, apex, 0, 860); g.addColorStop(0, `rgba(255,220,150,${.32 * arch})`); g.addColorStop(1, `rgba(120,70,20,${.05 * arch})`);
+            ctx.fillStyle = g; ctx.beginPath(); A.pts.forEach((p, i) => ctx[i ? 'lineTo' : 'moveTo'](...p)); ctx.closePath(); ctx.fill();
+            neon(() => A.pts.forEach((p, i) => ctx[i ? 'lineTo' : 'moveTo'](...p)), C_WORK, 1.8 * A.w, arch * A.w);
+            ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.strokeStyle = `rgba(255,220,160,${.18 * arch})`; ctx.lineWidth = 1;
+            for (let r = 1; r < 6; r++) { const yy = 860 - A.sag * r / 6, half = (A.pts[A.pts.length - 1][0] - A.pts[0][0]) / 2 * Math.sqrt(1 - r / 6); ctx.beginPath(); ctx.moveTo(A.xm - half, yy); ctx.lineTo(A.xm + half, yy); ctx.stroke(); }
+            ctx.restore(); ctx.restore();
+            if (k > .85) { glow(A.xm, apex - 6, 34, '255,235,190', arch * sstep(.85, 1, k)); ctx.save(); ctx.globalAlpha = arch; ctx.fillStyle = '#fff3d6'; ctx.beginPath(); ctx.arc(A.xm, apex - 6, 5, 0, TAU); ctx.fill(); ctx.restore(); }
+          } else {
+            const m = Math.max(2, Math.floor(A.pts.length * e));
+            neon(() => { A.pts.slice(0, Math.ceil(m / 2)).forEach((p, i) => ctx[i ? 'lineTo' : 'moveTo'](...p)); ctx.moveTo(...A.pts[A.pts.length - 1]); A.pts.slice(A.pts.length - Math.ceil(m / 2)).reverse().forEach(p => ctx.lineTo(...p)); }, C_WORK, 2 * A.w, arch * A.w);
+          }
+        });
+        glow(W / 2, 470, 500, '255,190,110', .25 * arch);
+        text('GAUDÍ', W / 2, 160, { font: F_EN, size: 56, ls: 26, color: '#ffe6b0', alpha: arch * sstep(19.0, 19.7, lt), glow: 'rgba(255,200,110,.8)', blur: 30 });
+        text('倒挂链模型 · hanging-chain model', W / 2, 228, { size: 30, color: '#f3e3bd', alpha: arch * sstep(19.3, 20, lt) });
+      }
+    }
+  } });
+
+// ---------------------------------------------------------------- 7. Ⅵ from balance to everything: d'Alembert, Lagrange, finite elements
+const PEND = { px: 560, py: 210, L: 440 };
+const pendTh = t => .5 * Math.cos(2.1 * t);
+const pendPos = t => [PEND.px + PEND.L * Math.sin(pendTh(t)), PEND.py + PEND.L * Math.cos(pendTh(t))];
+scene({ start: 47, len: 7, mb: 3, ch: ['VI', '从平衡到万物', 'FROM BALANCE TO EVERYTHING'],
+  subs: [[.4, 4.4, '1743 年，达朗贝尔把「运动」也看成了一种平衡——', 'In 1743, d’Alembert saw motion itself as a kind of balance—'],
+    [4.6, 9.0, '1788 年，拉格朗日以它为根基写成《分析力学》：全书没有一幅图。', 'In 1788, Lagrange built Analytical Mechanics on it—without a single diagram.'],
+    [9.2, 13.6, '今天，桥梁、高楼、飞机，都靠它来计算——', 'Today, bridges, skyscrapers and aircraft are all computed with it—'],
+    [13.8, 18.4, '这就是「有限元法」：把结构切成无数小块，每一块都记一笔虚功。', 'the finite element method: cut a structure into countless pieces, each keeping its own virtual-work account.']],
+  sfx: [[.3, 'swish'], [1.0, 'scribe', { dur: 3.0 }], [4.6, 'whoosh', { dur: 1.2 }], [5.6, 'page'], [6.7, 'page'], [7.8, 'page'], [9.1, 'whoosh', { dur: 1.2 }],
+    [9.5, 'data', { dur: 4.2 }], [14.0, 'glitch'], [14.05, 'shimmer'], [15.4, 'data', { dur: 2.6 }]],
+  cam: camPush(.03),
+  draw(lt) {
+    const pa = 1 - sstep(4.4, 5.0, lt), ba = win(lt, 4.6, 9.3, .5, .5), fa = sstep(9.1, 9.7, lt);
+    nebula('violet', lt + 500, .85 * (1 - fa) + .001); if (fa > 0) { ctx.save(); ctx.globalAlpha = fa; bgGrad('#08101f', '#010205'); ctx.restore(); nebula('blue', lt + 600, .5 * fa); }
+    starfield(lt, .4, 5);
+    if (pa > 0) {
+      const t = lt, [bx, by] = pendPos(t), e = 1 / 60, p0 = pendPos(t - e), p2 = pendPos(t + e), ax = (p2[0] - 2 * bx + p0[0]) / e / e, ay = (p2[1] - 2 * by + p0[1]) / e / e;
+      neon(() => { ctx.moveTo(PEND.px, PEND.py); ctx.lineTo(bx, by); }, C_STEEL, 2, pa);
+      glow(PEND.px, PEND.py, 20, '255,230,190', pa);
+      ctx.save(); ctx.globalAlpha = pa * .3; ctx.setLineDash([4, 10]); ctx.strokeStyle = '#cbb8ff'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(PEND.px, PEND.py, PEND.L, PI / 2 - .55, PI / 2 + .55); ctx.stroke(); ctx.restore();
+      ball(bx, by, 34, '255,215,150', pa);
+      const s = .15;
+      arrow(bx, by + 40, bx, by + 170, C_FORCE, { a: pa, w: 4, head: 16, label: 'mg', lx: 34, ly: -20, lsize: 36 });
+      arrow(bx - ax * s * .02, by - ay * s * .02, bx - ax * s, by - ay * s, '190,150,255', { a: pa * sstep(1.2, 1.7, lt), w: 4, head: 16, label: '−ma', lx: 0, ly: -34, lsize: 40 });
+      const Tx = PEND.px - bx, Ty = PEND.py - by, TL = Math.hypot(Tx, Ty);
+      arrow(bx + Tx / TL * 40, by + Ty / TL * 40, bx + Tx / TL * 170, by + Ty / TL * 170, C_CONS, { a: pa * .9, w: 3.5, head: 14 });
+      text("D'ALEMBERT · 1743", 1330, 320, { font: F_EN, size: 38, ls: 10, color: '#e6d6ff', alpha: pa * sstep(.4, 1, lt) });
+      const s2 = 'Σ (Fᵢ − mᵢaᵢ) · δrᵢ = 0', w2 = measure(s2, 60, 400, F_MATH, 'italic'), rev = clamp((lt - 1.0) / 2.4), x0 = 1330 - w2 / 2;
+      ctx.save(); ctx.beginPath(); ctx.rect(x0 - 10, 380, (w2 + 20) * rev, 110); ctx.clip();
+      text(s2, 1330, 435, { font: F_MATH, style: 'italic', size: 60, color: '#efe4ff', alpha: pa, glow: 'rgba(180,140,255,.9)', blur: 24 }); ctx.restore();
+      if (rev > 0 && rev < 1) glow(x0 + w2 * rev, 435, 40, '220,200,255', pa);
+      text('把惯性 −ma 也算作一个力，运动就成了「平衡」', 1330, 540, { size: 30, color: '#d8ccf5', alpha: pa * sstep(3.0, 3.5, lt) });
+    }
+    if (ba > 0) {
+      drawBook(W / 2 + 40, 470, lt, ba, Math.max(0, (lt - 5.4) * .9));
+      text('LAGRANGE · MÉCHANIQUE ANALITIQUE · 1788', W / 2, 120, { font: F_EN, size: 30, ls: 8, color: '#f0dcb0', alpha: ba });
+      text('« On ne trouvera point de Figures dans cet Ouvrage. »', W / 2, 800, { font: F_IT, style: 'italic', size: 40, color: '#fff0d0', alpha: ba * sstep(6.4, 7, lt), glow: 'rgba(255,200,120,.5)' });
+      text('「本书中找不到一幅图。」', W / 2, 856, { size: 30, color: '#e6d3a8', alpha: ba * sstep(6.8, 7.4, lt) });
+    }
+    if (fa > 0) {
+      const z = 1 + .22 * eio(clamp((lt - 13.8) / 4.6));
+      ctx.save(); ctx.translate(W / 2, 560); ctx.scale(z, z); ctx.translate(-W / 2, -560);
+      const xL = 300 + 1320 * clamp((lt - 9.4) / 9.0), level = lt > 14.0 ? 1 : 0;
+      const disp = femDraw(lt, fa, xL, 30 * sstep(9.4, 10.4, lt), level);
+      const [dx, dy] = disp([xL, 640]);
+      arrow(dx, dy - 130, dx, dy - 8, C_FORCE, { a: fa, w: 5, head: 20 });
+      glow(dx, dy - 20, 60, C_FORCE, .5 * fa);
+      ctx.restore();
+      const n0 = FEM.tris.length, n = level ? n0 * 4 : n0;
+      text('有限元法', 300, 150, { size: 50, weight: 900, color: '#fff', alpha: fa * sstep(9.5, 10, lt), align: 'left', glow: 'rgba(120,200,255,.6)' });
+      text('FINITE ELEMENT METHOD', 300, 205, { font: F_EN, size: 24, ls: 8, color: '#bcd6ff', alpha: fa * sstep(9.7, 10.2, lt), align: 'left' });
+      text(`${n.toLocaleString('en-US')} 个单元`, 1620, 150, { font: F_MATH, size: 44, color: lt > 14 && lt < 14.6 ? '#ffffff' : '#ffe6b0', alpha: fa * sstep(10, 10.5, lt), align: 'right', glow: 'rgba(255,200,110,.7)' });
+      text('elements', 1620, 200, { font: F_IT, style: 'italic', size: 28, color: '#d9c49a', alpha: fa * sstep(10.2, 10.7, lt), align: 'right' });
+      text('真实的工程里：上百万个', 1620, 252, { size: 32, color: '#f3e3bd', alpha: fa * sstep(15.6, 16.2, lt), align: 'right' });
+      const cbx = 300, cby = 262;
+      ctx.save(); ctx.globalAlpha = fa * sstep(10.4, 11, lt); TURBO.forEach((c, i) => { ctx.fillStyle = `rgb(${c})`; ctx.fillRect(cbx + i * 40, cby, 40, 14); }); ctx.restore();
+      text('应力 · stress', cbx + 380, cby + 7, { size: 24, color: '#cfe0ff', alpha: fa * sstep(10.4, 11, lt), align: 'left' });
+      if (lt > 14 && lt < 14.5) { ctx.fillStyle = `rgba(200,230,255,${.25 * (1 - (lt - 14) / .5)})`; ctx.fillRect(0, 0, W, H); }
+    }
+  } });
+
+// ---------------------------------------------------------------- 8. finale: montage → title → the lever, imagined once more
+const MONTAGE = [[2, 2.0], [2, 14.5], [3, 2.6], [2, 19.6], [5, 2.5], [5, 6.0], [5, 10.5], [5, 15.8], [6, 3.0], [6, 7.2], [6, 15.0], [6, 16.6], [7, 11.0], [7, 15.6], [4, 6.6], [6, 20.4]];
+const MWORDS = [['一根杠杆', 'a lever'], ['一组滑轮', 'a pulley'], ['一条悬链', 'a hanging chain'], ['一座大桥', 'a bridge']];
+scene({ start: 54, len: 7 + 4 / BAR, fo: 1.6, mb: 3,
+  subs: [], sfx: [...[0, 1, 2, 3].map(i => [i * BAR, 'whoosh', { dur: .7 }]), [13.9, 'swish', { pitch: 1.2 }], [17.4, 'sparkle', { dur: 3.4 }], [19.8, 'chime', { midi: 86 }]],
+  cam: (lt, d) => lt < 10.67 ? { z: 1 } : { z: 1 + .035 * (lt - 10.67) / (d - 10.67) },
+  shot: lt => lt < 10.67 ? Math.floor(lt / BEAT) : 99,
+  draw(lt) {
+    if (lt < 10.67) {
+      const bi = Math.min(15, Math.floor(lt / BEAT)), f = lt / BEAT - bi, [si, t0] = MONTAGE[bi];
+      ctx.save(); const z = 1.08 - .08 * eout(clamp(f * 1.5)); ctx.translate(W / 2, H / 2); ctx.scale(z, z); ctx.translate(-W / 2, -H / 2);
+      SC[si].draw(t0 + f * BEAT, SC[si].d); ctx.restore();
+      ctx.fillStyle = `rgba(255,255,255,${.14 * (1 - clamp(f * 5))})`; ctx.fillRect(0, 0, W, H);
+      const w = Math.floor(lt / BAR), wf = lt / BAR - w;
+      ctx.save(); const g = ctx.createLinearGradient(0, 400, 0, 700); g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(.5, 'rgba(0,0,0,.6)'); g.addColorStop(1, 'rgba(0,0,0,0)'); ctx.fillStyle = g; ctx.fillRect(0, 400, W, 300); ctx.restore();
+      const wa = sstep(0, .12, wf) * (1 - sstep(.9, 1, wf));
+      text(MWORDS[w][0], W / 2, 530, { size: 120, weight: 900, color: '#fff', alpha: wa, glow: 'rgba(255,210,140,.8)', blur: 30, ls: 20 });
+      text(MWORDS[w][1].toUpperCase(), W / 2, 625, { font: F_EN, size: 30, ls: 16, color: '#e6d3a8', alpha: wa });
+    } else {
+      const k = lt - 10.67;
+      nebula('gold', lt + 200, .75);
+      sunburst(W / 2, 400, lt, 1, 24);
+      const Lf = { cx: W / 2, cy: 850, u: 165 }, sc = .62;
+      ctx.save(); ctx.translate(W / 2, 850); ctx.scale(sc, sc); ctx.translate(-W / 2, -850);
+      const lth = TH0 * Math.sin(PI * clamp((k - 2.4) / 3.0)) ** 2;
+      drawLever(0, { L: Lf, a: sstep(.6, 1.6, k) });
+      drawLever(lth, { L: Lf, ghost: true, a: win(k, 2.4, 5.6, .4, .6) });
+      ctx.restore();
+      glow(W / 2, 400, 700, '255,170,80', .18);
+      titleWord('虚功原理', W / 2, 360, 200, k, 0, .12, 44, 1);
+      text('THE PRINCIPLE OF VIRTUAL WORK', W / 2, 520, { font: F_EN, size: 38, ls: 14, color: '#ecd9ae', alpha: sstep(.8, 1.8, k) });
+      text('想象它动一下——', W / 2, 620, { size: 48, weight: 700, ls: 10, color: '#fff', alpha: sstep(1.8, 2.5, k) * (1 - sstep(5.0, 5.4, k)), glow: 'rgba(255,200,120,.7)' });
+      text('就会明白，它为什么不动。', W / 2, 620, { size: 48, weight: 700, ls: 10, color: '#fff', alpha: sstep(5.5, 6.2, k) * (1 - sstep(8.8, 9.3, k)), glow: 'rgba(255,200,120,.7)' });
+      text('Imagine it moving—and you will see why it stays still.', W / 2, 680, { font: F_IT, style: 'italic', size: 30, color: '#e2cf9f', alpha: sstep(5.8, 6.5, k) * (1 - sstep(8.8, 9.3, k)) });
+      text('THE BEAUTY OF BALANCE', W / 2, 640, { font: F_EN, size: 34, ls: 16, color: '#e6cf9a', alpha: sstep(9.4, 10.4, k) });
+      text('— 平 衡 之 美 —', W / 2, 700, { size: 32, ls: 10, color: '#cbb58a', alpha: sstep(9.8, 10.8, k) });
+    }
+  } });
+
+// ======================================================================== timeline + frame pipeline
+SC.forEach(s => { s.t0 = s.start * BAR; s.d = s.len * BAR; });
+const SUBS = SC.flatMap(s => s.subs.map(([a, b, zh, en]) => ({ a: s.t0 + a, b: s.t0 + b, zh, en })));
+const HITS = [[6, 1], [16, .45], [23, .3], [30, .8], [32, .4], [39, .35], [46, .6], [47, .35], [54, .9], [58, .6]].map(([b, k]) => [b * BAR, k]);
+let SS = 1;                                         // smoke-test scale (1 for real frames)
+const sceneAt = t => { let sc = SC[0]; for (const s of SC) if (t >= s.t0) sc = s; return sc; };
+function drawLayer(t) {
+  t = clamp(t, 0, TOTAL - 1e-3);
+  const sc = sceneAt(t), lt = t - sc.t0;
+  ctx.setTransform(SS, 0, 0, SS, 0, 0); ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+  let shake = 0;
+  for (const [th, k] of HITS) if (t >= th && t < th + 1.5) shake += 16 * k * Math.exp(-(t - th) * 6);
+  const cam = sc.cam ? sc.cam(lt, sc.d) : camPush()(lt, sc.d);
+  ctx.save();
+  ctx.translate(W / 2 + (cam.x || 0) + (shake > .3 ? Math.sin(t * 91) * shake : 0), H / 2 + (cam.y || 0) + (shake > .3 ? Math.cos(t * 73) * shake : 0));
+  ctx.scale(cam.z, cam.z); ctx.translate(-W / 2, -H / 2);
+  sc.draw(lt, sc.d, t);
+  ctx.restore();
+  const fade = 1 - win(lt, 0, sc.d, sc.fi ?? .35, sc.fo ?? .35);
+  if (fade > 0) { ctx.fillStyle = `rgba(0,0,0,${fade})`; ctx.fillRect(0, 0, W, H); }
+}
+// ---- grading in plain Canvas 2D (identical in the browser and in the offline export)
+const BLM = [mk(960, 540), mk(480, 270), mk(240, 135), mk(120, 68), mk(60, 34)], BLX = BLM.map(c => c.getContext('2d')), ACC = mk(960, 540), ACX = ACC.getContext('2d');
+const VIG = (() => { const c = mk(W, H), x = c.getContext('2d'), g = x.createRadialGradient(W / 2, H / 2, 380, W / 2, H / 2, 1250);
+  g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(.6, 'rgba(0,0,0,.25)'); g.addColorStop(1, 'rgba(0,0,0,.72)'); x.fillStyle = g; x.fillRect(0, 0, W, H); return c; })();
+const GRAIN = (() => { const c = mk(384, 384), x = c.getContext('2d'), d = x.createImageData(384, 384), r = mulberry(99);
+  for (let i = 0; i < d.data.length; i += 4) { const v = r() * 255; d.data[i] = d.data[i + 1] = d.data[i + 2] = v; d.data[i + 3] = 255; } x.putImageData(d, 0, 0); return c; })();
+let GRAINPAT = null;
+function grade(T, sc) {
+  const amt = .85 * (sc.bloom ?? 1);
+  let src = cv;
+  BLM.forEach((c, i) => {
+    const x = BLX[i]; x.globalCompositeOperation = 'copy'; x.globalAlpha = 1; x.imageSmoothingQuality = 'medium'; x.drawImage(src, 0, 0, c.width, c.height);
+    if (i === 0) { x.globalCompositeOperation = 'multiply'; x.drawImage(c, 0, 0); x.globalCompositeOperation = 'lighter'; x.globalAlpha = .35; x.drawImage(c, 0, 0); }
+    src = c;
+  });
+  // sum the blurred levels at half resolution, then add them to the frame in a single full-size draw
+  ACX.globalCompositeOperation = 'copy'; ACX.globalAlpha = Math.min(1, .10 * amt); ACX.drawImage(BLM[0], 0, 0);
+  ACX.globalCompositeOperation = 'lighter'; ACX.imageSmoothingQuality = 'low';
+  [[1, .22], [2, .30], [3, .34], [4, .38]].forEach(([i, w]) => { ACX.globalAlpha = Math.min(1, w * amt); ACX.drawImage(BLM[i], 0, 0, 960, 540); });
+  ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalCompositeOperation = 'lighter'; ctx.imageSmoothingQuality = 'low';
+  ctx.globalAlpha = 1; ctx.drawImage(ACC, 0, 0, W, H);
+  // a little warmth in the highlights, a little blue in the shadows
+  ctx.globalCompositeOperation = 'soft-light'; ctx.globalAlpha = .18; ctx.fillStyle = '#ffd9a0'; ctx.fillRect(0, 0, W, H);
+  ctx.globalCompositeOperation = 'source-over'; ctx.globalAlpha = 1; ctx.drawImage(VIG, 0, 0);
+  if (!GRAINPAT) GRAINPAT = ctx.createPattern(GRAIN, 'repeat');
+  const s = Math.floor(T * 30) % 97; GRAINPAT.setTransform(new DOMMatrix([1, 0, 0, 1, (s * 137) % 384, (s * 251) % 384]));
+  ctx.globalCompositeOperation = 'overlay'; ctx.globalAlpha = .055; ctx.fillStyle = GRAINPAT; ctx.fillRect(0, 0, W, H);
+  ctx.restore();
+}
+function chapter(sc, lt) {
+  if (!sc.ch) return; const a = win(lt, .5, 5, .6, .8); if (a <= 0) return;
+  const [n, zh, en] = sc.ch, x = 90, y = 92, slide = (1 - eout(clamp((lt - .5) / .8))) * -30;
+  ctx.font = `700 46px ${F_EN}`; const nw = ctx.measureText(n).width;
+  text(n, x + slide, y, { font: F_EN, weight: 700, size: 46, color: '#e2bd6b', alpha: a, align: 'left' });
+  ctx.save(); ctx.globalAlpha = a; ctx.fillStyle = '#e2bd6b'; ctx.fillRect(x + nw + 20 + slide, y - 26, 2, 52); ctx.restore();
+  text(zh, x + nw + 42 + slide, y - 8, { size: 36, weight: 700, color: '#fff', alpha: a, align: 'left' });
+  text(en, x + nw + 44 + slide, y + 30, { font: F_EN, size: 16, ls: 5, color: '#cdb88e', alpha: a, align: 'left' });
+}
+function subtitles(T) {
+  for (const s of SUBS) {
+    if (T < s.a - .3 || T > s.b + .3) continue;
+    const a = win(T, s.a, s.b, .25, .3); if (a <= 0) continue;
+    ctx.save(); const g = ctx.createLinearGradient(0, 880, 0, H); g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(1, `rgba(0,0,0,${.6 * a})`); ctx.fillStyle = g; ctx.fillRect(0, 880, W, 200); ctx.restore();
+    text(s.zh, W / 2, 970, { size: 42, weight: 700, color: '#fff', alpha: a, glow: 'rgba(0,0,0,.9)', blur: 12, ls: 2 });
+    text(s.en, W / 2, 1026, { font: F_IT, style: 'italic', size: 29, color: '#ddd5c4', alpha: a * .9, glow: 'rgba(0,0,0,.9)', blur: 8 });
+  }
+}
+function overlays(T) {
+  const lb = 138 * Math.max(1 - eio(clamp((T - SC[1].t0) / .9)), eio(clamp((T - (TOTAL - 7)) / 2)));
+  if (lb > .5) { ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, lb); ctx.fillRect(0, H - lb, W, lb); }
+  const sc = sceneAt(T); chapter(sc, T - sc.t0);
+  subtitles(T);
+  let flash = 0; for (const [th, k] of HITS) if (T >= th && T < th + 1.5) flash += .75 * k * Math.exp(-(T - th) * 5);
+  if (flash > .01) { ctx.fillStyle = `rgba(255,248,235,${Math.min(.9, flash)})`; ctx.fillRect(0, 0, W, H); }
+}
+function frame(T) {
+  T = clamp(T, 0, TOTAL - 1e-3);
+  const sc = sceneAt(T);
+  drawLayer(T);
+  grade(T, sc);
+  ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
+  overlays(T);
+}
+
+// ======================================================================== fonts, playback, export hooks
+let fontsReady = false;
+const SRC = [...document.scripts].map(s => s.textContent).join('');
+const CHARS = [...new Set(SRC.replace(/[\x00-\x7f]/g, ''))].join('') + 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+Promise.all([
+  ...['400', '700', '900'].map(w => document.fonts.load(`${w} 40px "Noto Serif SC"`, CHARS)),
+  document.fonts.load('400 40px "Cinzel"'), document.fonts.load('700 40px "Cinzel"'), document.fonts.load('italic 500 40px "Cormorant Garamond"'), document.fonts.load('500 40px "Cormorant Garamond"'),
+  document.fonts.load('400 40px "STIX Two Text"', CHARS), document.fonts.load('italic 400 40px "STIX Two Text"', CHARS),
+]).catch(() => {}).then(() => document.fonts.ready).then(() => { fontsReady = true; const l = document.getElementById('load'); if (l) l.textContent = '字体已就绪 · 建议全屏观看（F）'; frame(0); });
+setTimeout(() => { fontsReady = true; }, 15000);
+
+window.__ready = () => fontsReady;
+window.__frame = t => { frame(t); return cv.toDataURL('image/jpeg', .93); };
+window.__duration = TOTAL;
+window.__smoke = (t0, t1, step) => {      // draw every frame time on a tiny canvas and report any exception
+  const small = mk(192, 108), old = ctx, errs = []; ctx = small.getContext('2d'); SS = .1;
+  for (let t = t0; t < t1; t += step) { try { drawLayer(t); overlays(t); } catch (e) { errs.push([+t.toFixed(3), String(e)]); } }
+  ctx = old; SS = 1; return errs; };
+window.__perf = T => { const sc = sceneAt(T), a = performance.now(); drawLayer(T); ctx.getImageData(0, 0, 1, 1); const b = performance.now(); grade(T, sc); ctx.getImageData(0, 0, 1, 1); const c = performance.now();
+  overlays(T); ctx.getImageData(0, 0, 1, 1); const d = performance.now(); cv.toDataURL('image/jpeg', .93); const e = performance.now(); return [b - a, c - b, d - c, e - d].map(x => Math.round(x)); };
+window.__cues = () => SC.flatMap(s => (s.sfx || []).map(([t, name, o]) => ({ t: +(s.t0 + t).toFixed(4), name, ...(o || {}) }))).sort((a, b) => a.t - b.t);
+
+const au = document.getElementById('au');
+if (!EXPORT) au.src = (window.EMBED && window.EMBED.audio) ? 'data:audio/mpeg;base64,' + window.EMBED.audio : 'music.mp3';
+if (EXPORT) { document.getElementById('start').remove(); document.getElementById('ui').remove(); }
+else {
+  let playing = false, clock0 = 0, useAudio = true, hideT = 0;
+  const ui = document.getElementById('ui'), pp = document.getElementById('pp'), fill = document.getElementById('fill'), tm = document.getElementById('tm');
+  document.getElementById('dur').textContent = `${Math.floor(TOTAL / 60)}:${String(Math.round(TOTAL % 60)).padStart(2, '0')}`;
+  const now = () => useAudio ? au.currentTime : (performance.now() - clock0) / 1000;
+  function loop() {
+    const T = now(); frame(T);
+    fill.style.width = (T / TOTAL * 100) + '%'; tm.textContent = `${Math.floor(T / 60)}:${String(Math.floor(T % 60)).padStart(2, '0')}`;
+    if (T >= TOTAL - .05) { playing = false; pp.textContent = '▶'; }
+    if (playing) requestAnimationFrame(loop);
+  }
+  function play() { playing = true; pp.textContent = '❚❚'; au.play().catch(() => { useAudio = false; clock0 = performance.now() - au.currentTime * 1000; }); requestAnimationFrame(loop); }
+  function pause() { playing = false; pp.textContent = '▶'; au.pause(); }
+  document.getElementById('go').onclick = () => { document.getElementById('start').remove(); if (au.currentTime >= TOTAL - .1) au.currentTime = 0; play(); poke(); };
+  pp.onclick = () => playing ? pause() : play();
+  document.getElementById('bar').onclick = e => { const r = e.currentTarget.getBoundingClientRect(); au.currentTime = clamp((e.clientX - r.left) / r.width) * TOTAL; if (!useAudio) clock0 = performance.now() - au.currentTime * 1000; if (!playing) frame(au.currentTime); };
+  document.getElementById('fs').onclick = () => document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen();
+  function poke() { ui.classList.remove('hide'); clearTimeout(hideT); hideT = setTimeout(() => ui.classList.add('hide'), 2200); }
+  addEventListener('mousemove', poke); addEventListener('touchstart', poke, { passive: true });
+  addEventListener('keydown', e => {
+    if (document.getElementById('start')) return;
+    if (e.code === 'Space') { e.preventDefault(); playing ? pause() : play(); }
+    if (e.code === 'KeyF') document.getElementById('fs').click();
+    if (e.code === 'ArrowRight' || e.code === 'ArrowLeft') { au.currentTime = clamp(au.currentTime + (e.code === 'ArrowRight' ? 5 : -5), 0, TOTAL); if (!playing) frame(au.currentTime); }
+    poke();
+  });
+}
+</script>
+</body>
+</html>
